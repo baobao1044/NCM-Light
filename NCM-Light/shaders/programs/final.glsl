@@ -113,10 +113,10 @@ void main() {
         } else if (packedTrans >= 0.55) {
             float transSky = clamp((packedTrans - 0.60) / 0.35, 0.0, 0.98);
             vec3 geomN = reconstructGeomWorldNormal(texcoord, viewPos);
-            float smoothVal = clamp(0.88 * min(RT_STRENGTH, 1.25), 0.0, 0.96) * distFade;
-            vec4 refl = traceReflectionRT(viewPos, geomN, 0.06, smoothVal, max(transSky, 0.25), 0.0032);
-            sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.86));
-            reflWork = 0.75;
+            float smoothVal = clamp(0.78 * min(RT_STRENGTH, 1.25), 0.0, 0.90) * distFade;
+            vec4 refl = traceReflectionRT(viewPos, geomN, 0.04, smoothVal, max(transSky, 0.25), 0.0028);
+            sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.65));
+            reflWork = 0.70;
         } else {
             vec4 surfData = texture2D(colortex3, texcoord);
             bool hasSurf;

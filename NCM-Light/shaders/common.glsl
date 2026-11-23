@@ -207,14 +207,25 @@ vec3 fastProjectToScreen(vec3 vPos) {
 
 vec3 reconstructGeomWorldNormal(vec2 uv, vec3 centerViewPos) {
     vec2 px = vec2(1.0 / max(viewWidth, 1.0), 1.0 / max(viewHeight, 1.0));
+    float dC = texture2D(depthtex0, uv).r;
     float dR = texture2D(depthtex0, clamp(uv + vec2(px.x, 0.0), 0.001, 0.999)).r;
+    float dL = texture2D(depthtex0, clamp(uv - vec2(px.x, 0.0), 0.001, 0.999)).r;
     float dU = texture2D(depthtex0, clamp(uv + vec2(0.0, px.y), 0.001, 0.999)).r;
-    vec3 pR = viewFromDepth(uv + vec2(px.x, 0.0), dR) - centerViewPos;
-    vec3 pU = viewFromDepth(uv + vec2(0.0, px.y), dU) - centerViewPos;
-    vec3 vn = cross(pR, pU);
+    float dD = texture2D(depthtex0, clamp(uv - vec2(0.0, px.y), 0.001, 0.999)).r;
+
+    /* Pick minimum-discontinuity neighbor on each axis to prevent silhouette edge spikes */
+    vec3 dx = (abs(dR - dC) <= abs(dL - dC))
+        ? (viewFromDepth(clamp(uv + vec2(px.x, 0.0), 0.001, 0.999), dR) - centerViewPos)
+        : (centerViewPos - viewFromDepth(clamp(uv - vec2(px.x, 0.0), 0.001, 0.999), dL));
+    vec3 dy = (abs(dU - dC) <= abs(dD - dC))
+        ? (viewFromDepth(clamp(uv + vec2(0.0, px.y), 0.001, 0.999), dU) - centerViewPos)
+        : (centerViewPos - viewFromDepth(clamp(uv - vec2(0.0, px.y), 0.001, 0.999), dD));
+
+    vec3 vn = cross(dx, dy);
     float l2 = dot(vn, vn);
     if (l2 < 1e-8) return vec3(0.0, 1.0, 0.0);
     vn *= inversesqrt(l2);
+    if (dot(vn, -centerViewPos) < 0.0) vn = -vn;
     return normalize(mat3(gbufferModelViewInverse) * vn);
 }
 
@@ -786,7 +797,7 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
             if (prj.z <= 0.0 || prj.x < 0.003 || prj.x > 0.997 || prj.y < 0.003 || prj.y > 0.997) {
                 break;
             }
-            float sd = texture2D(depthtex1, prj.xy).r;
+            float sd = texture2D(depthtex2, prj.xy).r;
             if (sd < 0.9999) {
                 float vz = fastViewZ(sd);
                 float pen = vz - pStep.z;
@@ -877,8 +888,8 @@ float microCreviceAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
     float fade = 1.0 - smoothstep(11.0, 18.0, viewDist);
     vec2 stepUV = vec2(2.5 / max(viewWidth, 1.0), 2.5 / max(viewHeight, 1.0));
 
-    float dA = texture2D(depthtex1, clamp(uv + stepUV, 0.002, 0.998)).r;
-    float dB = texture2D(depthtex1, clamp(uv - stepUV, 0.002, 0.998)).r;
+    float dA = texture2D(depthtex2, clamp(uv + stepUV, 0.002, 0.998)).r;
+    float dB = texture2D(depthtex2, clamp(uv - stepUV, 0.002, 0.998)).r;
 
     float occ = 0.0;
     float z0 = viewPos.z;
@@ -1146,6 +1157,19 @@ vec3 analyticSkyReflectionLinear(vec3 worldReflectDir) {
     float day = smoothstep(-0.08, 0.26, up);
     vec3 zenith = mix(vec3(0.008, 0.016, 0.042), vec3(0.14, 0.34, 0.82), day);
     vec3 baseSky = mix(hazeTintLinear(), zenith, horizon);
+
+    /* Reflect Night Aurora Borealis on water, glass & crystals */
+    float nightMask = smoothstep(-0.04, -0.22, up) * (1.0 - smoothstep(0.25, 0.70, rainStrength));
+    if (nightMask > 0.01 && worldReflectDir.y > 0.05) {
+        vec2 ap = worldReflectDir.xz / (worldReflectDir.y + 0.20);
+        float curtain1 = sin(ap.x * 2.4 + sin(ap.y * 1.7 + frameTimeCounter * 0.08) * 1.5);
+        float curtain2 = cos(ap.y * 2.1 - cos(ap.x * 1.4 - frameTimeCounter * 0.06) * 1.3);
+        float wave = smoothstep(0.15, 0.95, 0.5 + 0.5 * curtain1 * curtain2);
+        float elevFade = smoothstep(0.05, 0.26, worldReflectDir.y) * (1.0 - smoothstep(0.45, 0.92, worldReflectDir.y));
+        vec3 auroraCol = mix(vec3(0.06, 0.65, 0.34), vec3(0.30, 0.12, 0.62), smoothstep(0.12, 0.55, worldReflectDir.y));
+        baseSky += auroraCol * (wave * elevFade * nightMask * 0.52);
+    }
+
 #if VOLUMETRIC_CLOUDS
     if (worldReflectDir.y > 0.05) {
         float baseH = max(192.0, cameraPosition.y + 42.0);
@@ -1193,21 +1217,24 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
     }
 #endif
 
-    if (fresnel < 0.018) {
+    /* Fade out screen-space hits when ray points back toward/behind the camera (prevents back-face false hits!) */
+    float towardCamFade = 1.0 - smoothstep(0.02, 0.45, R.z);
+    if (fresnel < 0.018 || towardCamFade < 0.02) {
         return vec4(skyRefl + specGlint, fresnel);
     }
 
     float maxDist = min((far > 1.0) ? far : 48.0, 48.0);
-    vec3 startPos = viewPos + viewNormal * max(0.07, -viewPos.z * 0.005);
+    vec3 startPos = viewPos + viewNormal * max(0.08, -viewPos.z * 0.006);
 
     float tPrev = 0.0;
     float tHit = 0.0;
     vec2 hitUV = vec2(0.5);
     bool hit = false;
 
-    for (int i = 0; i < 5; i++) {
-        float f = float(i + 1) * 0.20;
-        float tCurr = 0.30 + (maxDist - 0.30) * (f * f * f);
+    /* 6 quadratic steps marching strictly against depthtex2 (opaque world ONLY -> ZERO hand/sword ghosting!) */
+    for (int i = 0; i < 6; i++) {
+        float f = float(i + 1) * (1.0 / 6.0);
+        float tCurr = 0.28 + (maxDist - 0.28) * (f * f);
         vec3 probe = startPos + R * tCurr;
         if (probe.z >= -near) break;
 
@@ -1216,10 +1243,11 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
             break;
         }
 
-        float sd = texture2D(depthtex1, proj.xy).r;
+        float sd = texture2D(depthtex2, proj.xy).r;
         if (sd < 0.9999) {
-            float pen = fastViewZ(sd) - probe.z;
-            if (pen > 0.0 && pen < 1.35 + 0.36 * tCurr) {
+            float vz = fastViewZ(sd);
+            float pen = vz - probe.z;
+            if (pen > 0.02 && pen < 0.55 + 0.14 * tCurr) {
                 tHit = tCurr;
                 hitUV = proj.xy;
                 hit = true;
@@ -1240,7 +1268,7 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
         vec3 midPos = startPos + R * tMid;
         vec3 mproj = fastProjectToScreen(midPos);
         if (mproj.z >= 0.0 && mproj.x > 0.0 && mproj.x < 1.0 && mproj.y > 0.0 && mproj.y < 1.0) {
-            float md = texture2D(depthtex1, mproj.xy).r;
+            float md = texture2D(depthtex2, mproj.xy).r;
             float mz = (md < 0.9999) ? fastViewZ(md) : -1e6;
             if (mz - midPos.z > 0.0) {
                 tHi = tMid;
@@ -1251,8 +1279,15 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
         }
     }
 
+    /* Reject hit if the first-person hand/sword covers colortex0 at hitUV! */
+    float dHandCheck = texture2D(depthtex1, hitUV).r;
+    float dWorldCheck = texture2D(depthtex2, hitUV).r;
+    if (dWorldCheck >= 0.9999 || dHandCheck < dWorldCheck - 1e-5) {
+        return vec4(skyRefl + specGlint, fresnel);
+    }
+
     float border = min(min(hitUV.x, 1.0 - hitUV.x), min(hitUV.y, 1.0 - hitUV.y));
-    float edgeFade = smoothstep(0.0, 0.08, border);
+    float edgeFade = smoothstep(0.0, 0.10, border) * towardCamFade;
     vec3 hitCol;
 #if SPECTRAL_DISPERSION
     if (dispersionAmt > 0.0005) {
