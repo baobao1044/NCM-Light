@@ -1,0 +1,6 @@
+#version 120
+/* DRAWBUFFERS:0 */
+#define DIMENSION_NETHER
+#define STAGE_FSH
+#define DISCARD_ALPHA 0.02
+#include "/programs/gbuffers_unlit_tex.glsl"

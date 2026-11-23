@@ -1,0 +1,4 @@
+#version 120
+/* DRAWBUFFERS:0 */
+#define STAGE_FSH
+#include "/programs/gbuffers_unlit_tex.glsl"

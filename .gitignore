@@ -1,0 +1,16 @@
+# Build outputs & packaged shaderpacks (distributed via GitHub Releases)
+*.zip
+
+# Local toolchains & caches
+.tools/
+.licenses/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS & editor metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/

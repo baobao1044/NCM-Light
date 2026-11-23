@@ -1,0 +1,57 @@
+name: Shaderpack CI & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-package:
+    name: Simulate, Compile 152 GLSL Shaders & Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install glslangValidator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends glslang-tools
+          glslangValidator --version
+
+      - name: Run numerical convergence & cascade budget simulation
+        run: python3 tools/simulate_levels.py
+
+      - name: Validate pack properties, Iris directives & 152 GLSL permutations
+        run: python3 tools/check_pack.py NCM-Light --glslang "$(which glslangValidator)"
+
+      - name: Package NCM-Light.zip
+        run: python3 tools/package_pack.py NCM-Light NCM-Light.zip
+
+      - name: Upload NCM-Light.zip build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NCM-Light
+          path: NCM-Light.zip
+
+      - name: Attach NCM-Light.zip to tagged GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" NCM-Light.zip --clobber
+          else
+            gh release create "$TAG" NCM-Light.zip --title "NCM-Light $TAG" --generate-notes
+          fi

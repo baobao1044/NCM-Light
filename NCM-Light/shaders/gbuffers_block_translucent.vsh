@@ -1,0 +1,4 @@
+#version 120
+#define STAGE_VSH
+#define USE_DIRECTIONAL_SHADE
+#include "/programs/gbuffers_lit_tex.glsl"
