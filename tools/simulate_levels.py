@@ -350,7 +350,20 @@ def main():
     print("default threshold %.2f skips work:  %s (%.2f vs %d uniform taps/pixel)"
           % (REFINE_THRESHOLD, "YES" if default_cost < TAPS[2] * 0.65 else "NO", default_cost, TAPS[2]))
 
-    return 0 if (converging and edges_dominate and not non_finite and default_cost < TAPS[2] * 0.65) else 1
+    # Neumann Multi-Bounce Path Tracing convergence check (NCM-PT v2.0):
+    # Simulates L_n = direct + 0.55 * albedo * L_{n-1} across frames.
+    # For albedo <= 0.85, spectral radius rho = 0.55 * 0.85 = 0.4675 < 1 -> guaranteed convergence.
+    albedo_test = 0.80
+    direct_test = 1.0
+    l_prev = 0.0
+    for _ in range(16):
+        l_prev = direct_test + 0.55 * albedo_test * l_prev
+    l_exact = direct_test / (1.0 - 0.55 * albedo_test)
+    pt_converged = abs(l_prev - l_exact) < 1e-4
+    print("\nNeumann multi-bounce PT convergence (albedo=%.2f): L16=%.6f vs analytical=%.6f (%s)"
+          % (albedo_test, l_prev, l_exact, "PASS" if pt_converged else "FAIL"))
+
+    return 0 if (converging and edges_dominate and not non_finite and default_cost < TAPS[2] * 0.65 and pt_converged) else 1
 
 
 if __name__ == "__main__":

@@ -11,7 +11,8 @@
     const int colortex1Format = RGBA16F;
     const int colortex2Format = RGBA8;
     const int colortex3Format = RGBA8;
-    const int colortex4Format = R11F_G11F_B10F;
+    const int colortex4Format = RGBA16F;
+    const int colortex5Format = RGBA16F;
     const int shadowcolor0Format = RGBA8;
     const float shadowIntervalSize = 2.0;
     const float shadowDistanceRenderMul = 1.0;
@@ -21,6 +22,9 @@
 #define NCM_COMMON_GLSL
 
 #include "/options.glsl"
+
+const bool colortex4Clear = false;
+const bool colortex5Clear = false;
 
 /* ============================= Constants ============================= */
 
@@ -53,7 +57,8 @@ uniform sampler2D colortex0;    /* sRGB albedo -> Linear HDR lit scene (R11G11B1
 uniform sampler2D colortex1;    /* 1/4-res level 0: (rays0, ao0, volGate0, edgeGate0) */
 uniform sampler2D colortex2;    /* full-res RGBA8:  (rays,  wL1, packedTrans, volGate1) */
 uniform sampler2D colortex3;    /* full-res RGBA8:  (oct01.xy, blockLight, matSkyByte) */
-uniform sampler2D colortex4;    /* 1/4-res RTGI 0:  gi0.rgb (R11G11B10F) */
+uniform sampler2D colortex4;    /* 1/4-res PT raw/temporal GI (RGBA16F) */
+uniform sampler2D colortex5;    /* 1/4-res PT persistent reservoir for Neumann multi-bounce (RGBA16F) */
 
 uniform sampler2D depthtex0;
 uniform sampler2D depthtex1;
@@ -66,10 +71,13 @@ uniform mat4 gbufferProjection;
 uniform mat4 gbufferProjectionInverse;
 uniform mat4 gbufferModelView;
 uniform mat4 gbufferModelViewInverse;
+uniform mat4 gbufferPreviousProjection;
+uniform mat4 gbufferPreviousModelView;
 uniform mat4 shadowProjection;
 uniform mat4 shadowModelView;
 
 uniform vec3 cameraPosition;
+uniform vec3 previousCameraPosition;
 uniform vec3 sunPosition;
 uniform vec3 moonPosition;
 uniform vec3 shadowLightPosition;
@@ -79,6 +87,7 @@ uniform vec3 skyColor;
 uniform ivec2 eyeBrightnessSmooth;
 
 uniform float frameTimeCounter;
+uniform int frameCounter;
 uniform float rainStrength;
 uniform float blindness;
 uniform float near;
@@ -558,90 +567,143 @@ float marchShafts(vec3 dir, float tHit, int taps, out float contrast, out float 
 #endif
 }
 
-/* == Deterministic 4-Quadrant Omnidirectional RTGI & Deep Crevice RTAO ==
-   Runs ONLY at 1/4 resolution (0.50 depth taps per screen pixel, ZERO noise!):
-   Covers all 4 quadrants around the 3D surface normal at near (0.55m) + mid (2.6m)
-   radii with finite-thickness pass-through (arXiv:2301.11376v2 & 2607.20384v2). */
+/* == Real-Time Multi-Bounce Demodulated Path Tracing (NCM-PT v2.0) ==
+   Cosine-weighted stratified R2/Halton + temporal rotation, shadow-map Next Event
+   Estimation (NEE) at secondary hit vertices, Neumann multi-bounce radiance
+   feedback from colortex5, and analytical sky fallback for unoccluded rays. */
 
-vec3 evaluateHitBounceRadiance(vec2 hitUV) {
+vec2 reprojectToPrevUV(vec3 viewPos) {
+    vec3 feetPos = (gbufferModelViewInverse * vec4(viewPos, 1.0)).xyz;
+    vec3 prevFeet = feetPos + (cameraPosition - previousCameraPosition);
+    vec4 prevView = gbufferPreviousModelView * vec4(prevFeet, 1.0);
+    vec4 prevClip = gbufferPreviousProjection * prevView;
+    if (prevClip.w <= 1e-4) return vec2(-1.0);
+    return (prevClip.xy / prevClip.w) * 0.5 + 0.5;
+}
+
+float evaluateSecondarySunNEE(vec3 hitViewPos) {
+#if SHADOWS
+    vec3 hitFeet = (gbufferModelViewInverse * vec4(hitViewPos, 1.0)).xyz;
+    vec4 shView = shadowModelView * vec4(hitFeet, 1.0);
+    vec4 shClip = shadowProjection * shView;
+    vec3 preNDC = shClip.xyz / max(shClip.w, 1e-5);
+    float rawEdge = max(abs(preNDC.x), abs(preNDC.y));
+    if (rawEdge >= 0.99) return 1.0;
+    vec3 dNDC = distortShadowNDC(preNDC);
+    vec3 sUVZ = dNDC * 0.5 + 0.5 - vec3(0.0, 0.0, SHADOW_BIAS * 1.5);
+    if (sUVZ.x < 0.002 || sUVZ.x > 0.998 || sUVZ.y < 0.002 || sUVZ.y > 0.998) return 1.0;
+    return step(sUVZ.z, texture2D(shadowtex1, sUVZ.xy).r);
+#else
+    return 1.0;
+#endif
+}
+
+vec3 evaluatePathVertexRadiance(vec2 hitUV, vec3 hitViewPos) {
     vec3 hitAlbedo = srgbToLinear(texture2D(colortex0, hitUV).rgb);
     vec4 hitSurf = texture2D(colortex3, hitUV);
     float rawByte = floor(hitSurf.w * 255.0 + 0.5);
-    if (rawByte < 21.0) return hitAlbedo * 0.8;
+    if (rawByte < 21.0) return hitAlbedo * 0.75;
 
     float hitMat = floor((rawByte + 2.0) / 42.0);
     if (abs(hitMat - 5.0) < 0.5) {
-        return hitAlbedo * 6.8;
+        return hitAlbedo * 7.2;
     }
 
     float hitSky = clamp((rawByte - hitMat * 42.0) / 36.0, 0.0, 1.0);
     float hitBlock = hitSurf.z;
-    float day = smoothstep(-0.05, 0.25, sunElevation());
-    vec3 sunBounce = hitAlbedo * vec3(1.08, 1.00, 0.88) * (2.35 * day * hitSky * hitSky);
-    vec3 torchBounce = hitAlbedo * vec3(1.0, 0.66, 0.34) * (hitBlock * hitBlock * 3.8);
-    return min(sunBounce + torchBounce + hitAlbedo * 0.25 * hitSky, vec3(6.5));
+    float sunNEE = evaluateSecondarySunNEE(hitViewPos);
+    vec3 sunIrrad = directCelestialIrradiance() * directLightWeatherFade();
+    vec3 skyIrrad = skyAmbientIrradiance();
+
+    vec3 directBounce = hitAlbedo * sunIrrad * (1.85 * sunNEE * hitSky);
+    vec3 skyBounce = hitAlbedo * skyIrrad * (0.42 * hitSky);
+    vec3 torchBounce = hitAlbedo * vec3(1.0, 0.66, 0.34) * (hitBlock * hitBlock * 4.0);
+
+    vec3 multiBounce = vec3(0.0);
+#if PT_MULTI_BOUNCE
+    vec2 prevHitUV = reprojectToPrevUV(hitViewPos);
+    if (prevHitUV.x > 0.004 && prevHitUV.x < 0.996 && prevHitUV.y > 0.004 && prevHitUV.y < 0.996) {
+        vec3 prevGI = texture2D(colortex5, prevHitUV).rgb;
+        /* Neumann multi-bounce feedback with 0.55 energy conservation cap */
+        multiBounce = hitAlbedo * min(prevGI, vec3(3.5)) * 0.55;
+    }
+#endif
+
+    return min(directBounce + skyBounce + torchBounce + multiBounce, vec3(8.0));
 }
 
-vec4 traceOmniHemisphereRT(vec3 viewPos, vec3 viewNormal) {
+vec4 tracePathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal) {
 #if !RT_GI
     return vec4(0.0, 0.0, 0.0, 1.0);
 #else
     float viewDist = -viewPos.z;
-    if (viewDist > 40.0) return vec4(0.0, 0.0, 0.0, 1.0);
+    if (viewDist > 42.0) return vec4(0.0, 0.0, 0.0, 1.0);
 
-    float distAtten = 1.0 - smoothstep(26.0, 40.0, viewDist);
+    float distAtten = 1.0 - smoothstep(28.0, 42.0, viewDist);
     vec3 b1, b2;
     buildOrthonormalBasis(viewNormal, b1, b2);
 
     vec3 startPos = viewPos + viewNormal * max(0.05, viewDist * 0.005);
-    float rNear = 0.52 + viewDist * 0.015;
-    float rFar  = clamp(2.2 + viewDist * 0.07, 2.2, 5.2);
+    float rNear = 0.50 + viewDist * 0.015;
+    float rFar  = clamp(2.3 + viewDist * 0.075, 2.3, 5.4);
 
-    /* 4 deterministic Golden-Quadrant unit vectors in tangent space (cosPhi, sinPhi):
-       100% spatially invariant -> ZERO checkerboard, ZERO grain, 360-deg corner coverage! */
-    vec2 dirs[4];
-    dirs[0] = vec2( 0.92388,  0.38268);
-    dirs[1] = vec2(-0.38268,  0.92388);
-    dirs[2] = vec2(-0.92388, -0.38268);
-    dirs[3] = vec2( 0.38268, -0.92388);
+    vec2 pxCoord = quarterUV * vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25;
+    float baseNoise = ignNoise(pxCoord);
+    int frameMod = frameCounter - 64 * (frameCounter / 64);
+    float frameShift = float(frameMod) * 0.61803398875;
+    float sppF = float(PT_SPP);
+
+    vec3 skyFill = skyAmbientIrradiance() * 0.28;
+    float skyFade = smoothstep(-0.08, 0.22, sunElevation());
 
     float occSum = 0.0;
     vec3 giSum = vec3(0.0);
 
-    for (int k = 0; k < 4; k++) {
-        vec3 rayDir = (b1 * dirs[k].x + b2 * dirs[k].y) * 0.78 + viewNormal * 0.6258;
+    for (int s = 0; s < PT_SPP; s++) {
+        float u1 = fract(baseNoise + frameShift + (float(s) + 0.5) / sppF);
+        float u2 = fract(baseNoise * 1.618034 + frameShift * 0.7548776 + float(s) * 0.381966);
+
+        float phi = 6.2831853 * u1;
+        float cosTheta = sqrt(max(0.04, u2));
+        float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+        vec3 rayDir = (b1 * cos(phi) + b2 * sin(phi)) * sinTheta + viewNormal * cosTheta;
+
         float dirOcc = 0.0;
         vec2 hitUV = vec2(-1.0);
+        vec3 hitPos = vec3(0.0);
         float hitWeight = 0.0;
 
-        /* Near radius: deep 90-deg block crevice AO + close bounce */
-        vec3 pNear = startPos + rayDir * rNear;
+        /* Near bounce: tight 90-deg crevices & local color bleed */
+        vec3 pNear = startPos + rayDir * (rNear * (0.75 + 0.5 * u2));
         vec3 prjN = fastProjectToScreen(pNear);
         if (prjN.z > 0.0 && prjN.x > 0.003 && prjN.x < 0.997 && prjN.y > 0.003 && prjN.y < 0.997) {
             float sdN = texture2D(depthtex1, prjN.xy).r;
             if (sdN < 0.9999) {
-                float penN = fastViewZ(sdN) - pNear.z;
+                float vzN = fastViewZ(sdN);
+                float penN = vzN - pNear.z;
                 if (penN > 0.02 && penN < 0.95) {
                     dirOcc = 1.0 - smoothstep(0.55, 0.95, penN);
                     hitUV = prjN.xy;
+                    hitPos = viewFromDepth(hitUV, sdN);
                     hitWeight = 1.0;
                 }
             }
         }
 
-        /* Far radius: room-scale sunlit wall & torch GI bounce + canopy AO */
-        vec3 pFar = startPos + rayDir * rFar;
-        vec3 prjF = fastProjectToScreen(pFar);
-        if (prjF.z > 0.0 && prjF.x > 0.003 && prjF.x < 0.997 && prjF.y > 0.003 && prjF.y < 0.997) {
-            float sdF = texture2D(depthtex1, prjF.xy).r;
-            if (sdF < 0.9999) {
-                float penF = fastViewZ(sdF) - pFar.z;
-                if (penF > 0.04 && penF < 2.2) {
-                    float fOcc = (1.0 - smoothstep(1.3, 2.2, penF)) * 0.58;
-                    dirOcc = max(dirOcc, fOcc);
-                    if (hitWeight < 0.5) {
+        /* Far bounce: room-scale sunlit wall & torch GI + canopy AO */
+        if (hitWeight < 0.5) {
+            vec3 pFar = startPos + rayDir * (rFar * (0.70 + 0.6 * u1));
+            vec3 prjF = fastProjectToScreen(pFar);
+            if (prjF.z > 0.0 && prjF.x > 0.003 && prjF.x < 0.997 && prjF.y > 0.003 && prjF.y < 0.997) {
+                float sdF = texture2D(depthtex1, prjF.xy).r;
+                if (sdF < 0.9999) {
+                    float vzF = fastViewZ(sdF);
+                    float penF = vzF - pFar.z;
+                    if (penF > 0.04 && penF < 2.2) {
+                        dirOcc = max(dirOcc, (1.0 - smoothstep(1.3, 2.2, penF)) * 0.58);
                         hitUV = prjF.xy;
-                        hitWeight = 0.78;
+                        hitPos = viewFromDepth(hitUV, sdF);
+                        hitWeight = 0.85;
                     }
                 }
             }
@@ -649,13 +711,17 @@ vec4 traceOmniHemisphereRT(vec3 viewPos, vec3 viewNormal) {
 
         occSum += dirOcc;
         if (hitWeight > 0.0) {
-            giSum += evaluateHitBounceRadiance(hitUV) * hitWeight;
+            giSum += evaluatePathVertexRadiance(hitUV, hitPos) * hitWeight;
+        } else {
+            vec3 worldRay = normalize(mat3(gbufferModelViewInverse) * rayDir);
+            float upMask = smoothstep(-0.15, 0.55, worldRay.y);
+            giSum += skyFill * (0.35 + 0.65 * upMask) * (0.25 + 0.75 * skyFade);
         }
     }
 
-    /* Deep, sculpted crevice AO (down to ~0.34 in tight 3-wall corners!) */
-    float aoVis = 1.0 - clamp((occSum * 0.25) * distAtten * 0.88, 0.0, 0.68);
-    vec3 giAvg = (giSum * 0.25) * distAtten;
+    float invSpp = 1.0 / sppF;
+    float aoVis = 1.0 - clamp((occSum * invSpp) * distAtten * 0.88, 0.0, 0.68);
+    vec3 giAvg = (giSum * invSpp) * distAtten;
     return vec4(giAvg, aoVis);
 #endif
 }

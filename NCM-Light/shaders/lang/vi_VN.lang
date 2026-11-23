@@ -15,9 +15,18 @@ option.SHADOWS=Bóng đổ
 value.SHADOWS.0=Tắt (tia màn hình nhẹ)
 value.SHADOWS.1=Bật (shadow map nén 4.4x)
 
-option.RT_GI=Ray Tracing GI & AO (NCM)
+option.RT_GI=Path Tracing GI & AO (NCM-PT)
 value.RT_GI.0=Tắt
-value.RT_GI.1=Bật (bán cầu 1/4 res)
+value.RT_GI.1=Bật (Path Tracing Đa Nảy 1/4 res)
+
+option.PT_SPP=Số Tia Path Tracing (SPP)
+value.PT_SPP.1=1 spp (Siêu nhẹ / iGPU)
+value.PT_SPP.2=2 spp (Cân bằng / Khuyên dùng)
+value.PT_SPP.4=4 spp (Siêu mịn / Ultra)
+
+option.PT_MULTI_BOUNCE=Ánh Sáng Đa Nảy (Neumann Feedback)
+value.PT_MULTI_BOUNCE.0=Tắt (1 lần nảy)
+value.PT_MULTI_BOUNCE.1=Bật (Đa nảy vô hạn qua Reservoir)
 
 option.RT_REFLECTIONS=Phản chiếu Ray Tracing (NCM)
 value.RT_REFLECTIONS.0=Tắt

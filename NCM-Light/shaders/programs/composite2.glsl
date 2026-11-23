@@ -24,40 +24,45 @@ void main() {
 
 varying vec2 texcoord;
 
-void gatherCoarseEdge2x2(vec2 uv, float centerZ, vec3 centerWorldN,
+void denoisePathTracedGI(vec2 uv, float centerZ, vec3 centerWorldN,
                          out vec3 outGI, out float outAO)
 {
     vec2 coarseRes = max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
-    vec2 invCoarse = 1.0 / coarseRes;
-    vec2 fCoord = uv * coarseRes - 0.5;
-    vec2 baseIdx = floor(fCoord);
-    vec2 f = clamp(fCoord - baseIdx, 0.0, 1.0);
-    vec2 uv00 = (baseIdx + 0.5) * invCoarse;
+    vec2 stepUV = 2.0 / coarseRes;
+
+    vec2 offs[5];
+    offs[0] = vec2( 0.0,  0.0);
+    offs[1] = vec2( stepUV.x, 0.0);
+    offs[2] = vec2(-stepUV.x, 0.0);
+    offs[3] = vec2( 0.0,  stepUV.y);
+    offs[4] = vec2( 0.0, -stepUV.y);
+
+    float kW[5];
+    kW[0] = 0.36;
+    kW[1] = 0.16;
+    kW[2] = 0.16;
+    kW[3] = 0.16;
+    kW[4] = 0.16;
 
     vec3 sumGI = vec3(0.0);
     float sumAO = 0.0;
     float wSum = 0.0;
 
-    for (int iy = 0; iy < 2; iy++) {
-        for (int ix = 0; ix < 2; ix++) {
-            vec2 off = vec2(float(ix), float(iy));
-            vec2 cuv = clamp(uv00 + off * invCoarse, 0.002, 0.998);
-            float bW = ((ix == 0) ? (1.0 - f.x) : f.x) * ((iy == 0) ? (1.0 - f.y) : f.y);
+    for (int i = 0; i < 5; i++) {
+        vec2 cuv = clamp(uv + offs[i], 0.002, 0.998);
+        float cd = texture2D(depthtex0, cuv).r;
+        if (cd >= 0.9999) continue;
 
-            float cd = texture2D(depthtex0, cuv).r;
-            if (cd >= 0.9999) continue;
+        float dz = abs(fastViewZ(cd) - centerZ);
+        vec4 cSurf = texture2D(colortex3, cuv);
+        vec3 cNorm = (cSurf.w > 0.08) ? octDecodeNormal(cSurf.xy) : centerWorldN;
+        float nDot = max(dot(centerWorldN, cNorm), 0.0);
+        float nW = nDot * nDot;
 
-            float dz = abs(fastViewZ(cd) - centerZ);
-            vec4 cSurf = texture2D(colortex3, cuv);
-            vec3 cNorm = (cSurf.w > 0.08) ? octDecodeNormal(cSurf.xy) : centerWorldN;
-            float nDot = max(dot(centerWorldN, cNorm), 0.0);
-            float nW = nDot * nDot;
-
-            float w = bW * (0.02 + 0.98 * nW * nW) / (1.0 + dz * dz * 8.0);
-            sumAO += texture2D(colortex1, cuv).y * w;
-            sumGI += texture2D(colortex4, cuv).rgb * w;
-            wSum += w;
-        }
+        float w = kW[i] * (0.02 + 0.98 * nW * nW) / (1.0 + dz * dz * 6.0);
+        sumAO += texture2D(colortex1, cuv).y * w;
+        sumGI += texture2D(colortex5, cuv).rgb * w;
+        wSum += w;
     }
 
     if (wSum > 1e-4) {
@@ -66,7 +71,7 @@ void gatherCoarseEdge2x2(vec2 uv, float centerZ, vec3 centerWorldN,
         outGI = max(sumGI * invW, vec3(0.0));
     } else {
         outAO = clamp(texture2D(colortex1, uv).y, 0.25, 1.0);
-        outGI = texture2D(colortex4, uv).rgb;
+        outGI = texture2D(colortex5, uv).rgb;
     }
 }
 
@@ -108,13 +113,13 @@ void main() {
     float edgeWork = 0.0;
 
 #if RT_GI
-    if (!noGeometry && !isHand && !isTranslucent && hasSurf && RT_STRENGTH > 0.001 && (-viewPos.z) < 40.0) {
-        if (coarse1.w > 0.08 && DEBUG_LEVEL != 1) {
-            gatherCoarseEdge2x2(texcoord, viewPos.z, worldNormal, estGI, estAO);
+    if (!noGeometry && !isHand && !isTranslucent && hasSurf && RT_STRENGTH > 0.001 && (-viewPos.z) < 42.0) {
+        if (DEBUG_LEVEL != 1) {
+            denoisePathTracedGI(texcoord, viewPos.z, worldNormal, estGI, estAO);
             edgeWork = coarse1.w;
         } else {
             estAO = clamp(coarse1.y, 0.25, 1.0);
-            estGI = texture2D(colortex4, texcoord).rgb;
+            estGI = texture2D(colortex5, texcoord).rgb;
         }
     }
 #endif
@@ -227,7 +232,7 @@ void main() {
 
         float bl2 = blockLight * blockLight;
         vec3 torchTerm = vec3(1.00, 0.56, 0.22) * (bl2 * (0.65 + 1.85 * blockLight)) * mix(1.0, aoApplied, 0.45);
-        vec3 giTerm = estGI * (0.95 * RT_STRENGTH);
+        vec3 giTerm = estGI * (1.10 * RT_STRENGTH);
 
         vec3 totalIrradiance = max(skyTerm, minCaveAmb) + directTerm + torchTerm + giTerm;
         vec3 diffAlbedo = isMetal ? (albedoLin * 0.35) : albedoLin;

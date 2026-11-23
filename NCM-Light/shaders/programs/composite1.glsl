@@ -90,6 +90,8 @@ void main() {
     float volGate0 = clamp(max(rayPred, edges.x * 0.55 * step(0.002, rays0)), 0.0, 1.0);
 
     vec3 gi0 = vec3(0.0);
+    vec3 reservoirGI = vec3(0.0);
+    float normDepth = 1.0;
     float ao0 = 1.0;
     float edgeGate0 = 0.0;
 
@@ -98,19 +100,33 @@ void main() {
         gi0 = vSky.rgb;
         ao0 = vSky.a;
     } else {
+        normDepth = clamp((-viewPos.z) / 64.0, 0.0, 1.0);
 #if RT_GI
-        if (hasSurf && RT_STRENGTH > 0.001 && (-viewPos.z) < 40.0) {
+        if (hasSurf && RT_STRENGTH > 0.001 && (-viewPos.z) < 42.0) {
             vec3 viewN = normalize(mat3(gbufferModelView) * worldN);
-            vec4 rt0 = traceOmniHemisphereRT(viewPos, viewN);
-            gi0 = rt0.rgb;
+            vec4 rt0 = tracePathGI(texcoord, viewPos, viewN);
+            float currLuma = dot(rt0.rgb, vec3(0.2126, 0.7152, 0.0722));
+            gi0 = rt0.rgb / (1.0 + currLuma * 0.08);
             ao0 = rt0.a;
             edgeGate0 = clamp(max(edges.x * 0.80, edges.y * 0.90), 0.0, 1.0);
+
+            reservoirGI = gi0;
+            vec2 prevUV = reprojectToPrevUV(viewPos);
+            if (prevUV.x > 0.004 && prevUV.x < 0.996 && prevUV.y > 0.004 && prevUV.y < 0.996) {
+                vec4 hist = texture2D(colortex5, prevUV);
+                float histDist = hist.a * 64.0;
+                float currDist = -viewPos.z;
+                if (abs(histDist - currDist) < max(0.35, currDist * 0.08)) {
+                    reservoirGI = mix(gi0, max(hist.rgb, vec3(0.0)), 0.87);
+                }
+            }
         }
 #endif
     }
 
     gl_FragData[0] = vec4(rays0, ao0, volGate0, edgeGate0);
     gl_FragData[1] = vec4(gi0, 1.0);
+    gl_FragData[2] = vec4(reservoirGI, normDepth);
 }
 
 #endif

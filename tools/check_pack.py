@@ -338,6 +338,8 @@ def glsl_checks(shaders_dir, dim_sets, glslang, workdir):
                     variants = [
                         ("shadows0",  source.replace("#define SHADOWS 1", "#define SHADOWS 0")),
                         ("rtgi0",     source.replace("#define RT_GI 1", "#define RT_GI 0")),
+                        ("ptmb0",     source.replace("#define PT_MULTI_BOUNCE 1", "#define PT_MULTI_BOUNCE 0")),
+                        ("ptspp1",    source.replace("#define PT_SPP 2", "#define PT_SPP 1")),
                         ("rtrefl0",   source.replace("#define RT_REFLECTIONS 1", "#define RT_REFLECTIONS 0")),
                         ("clouds0",   source.replace("#define VOLUMETRIC_CLOUDS 1", "#define VOLUMETRIC_CLOUDS 0")),
                         ("cshadow0",  source.replace("#define COLORED_SHADOWS 1", "#define COLORED_SHADOWS 0")),

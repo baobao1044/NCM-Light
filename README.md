@@ -2,38 +2,37 @@
 
 # NCM-Light
 
-### **Ray-Traced Global Illumination, Binary Mirror Reflections & Volumetric Shafts — Engineered to Fly on Integrated GPUs**
+### **Real-Time Multi-Bounce Demodulated Path Tracing, Binary Mirror Reflections & Volumetric Shafts — Engineered to Fly on Integrated GPUs**
 
 [![Shaderpack CI](https://github.com/baobao1044/NCM-Light/actions/workflows/ci.yml/badge.svg)](https://github.com/baobao1044/NCM-Light/actions/workflows/ci.yml)
 [![Download Latest ZIP](https://img.shields.io/github/v/release/baobao1044/NCM-Light?color=2ea043&label=Download%20NCM-Light.zip&logo=github)](https://github.com/baobao1044/NCM-Light/releases/latest)
 [![OpenGL 3.3 Core](https://img.shields.io/badge/OpenGL-3.3%20Core%20(%23version%20120)-1f6feb)](#hardware--compatibility)
-[![GLSL Permutations](https://img.shields.io/badge/Verified%20Shaders-164%2F164%20Passing-3fb950)](tools/check_pack.py)
+[![GLSL Permutations](https://img.shields.io/badge/Verified%20Shaders-170%2F170%20Passing-3fb950)](tools/check_pack.py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-d29922.svg)](LICENSE)
 
 **Zero Compute Shaders · Zero SSBOs · Zero TAA Smearing · Pure OpenGL 3.3 (`#version 120`) for Iris & OptiFine**
 
-[**⬇ Download `NCM-Light.zip` (v1.1.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**Visual Benchmark**](#visual-benchmark--multiscale-proof) · [**What's New in v1.1**](#whats-new-in-v11--full-feature-suite) · [**Why It's Fast**](#where-does-the-speed-come-from-7-core-optimizations) · [**Comparison**](#head-to-head-comparison) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
+[**⬇ Download `NCM-Light.zip` (v2.0.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**Visual Benchmark**](#visual-benchmark--multiscale-proof) · [**What's New in v2.0**](#whats-new-in-v20--real-time-multi-bounce-path-tracing) · [**Why It's Fast**](#where-does-the-speed-come-from-7-core-optimizations) · [**Comparison**](#head-to-head-comparison) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
 
 </div>
 
 ---
 
-| **`54.4 MB / frame`** | **`1.84 taps / px`** | **`0.50 taps / px`** | **`~36 texels / block`** |
+| **`56.5 MB / frame`** | **`1.84 taps / px`** | **`2–4 spp` Multi-Bounce** | **`~36 texels / block`** |
 | :---: | :---: | :---: | :---: |
-| **-67% DRAM Bandwidth** @ 1080p vs. standard `RGBA16F` PBR packs (`3.0×` lighter on shared DDR4 iGPUs) | **-98.6% Volumetric Taps** vs. 128-tap ground truth (`MAE = 0.0029`) via NCM telescoping residuals | **-96.9% GI/AO Depth Taps** via `0.25×` omnidirectional probing + `85%` 1-tap hardware bilinear fast path | **4.4× Near-Player Shadow Density** at `1024px` (`~4500px` equivalent clarity, zero Lego stair-stepping) |
+| **-66% DRAM Bandwidth** @ 1080p vs. standard `RGBA16F` PBR packs (`3.0×` lighter on shared DDR4 iGPUs) | **-98.6% Volumetric Taps** vs. 128-tap ground truth (`MAE = 0.0029`) via NCM telescoping residuals | **Neumann Infinite-Bounce PT** (`colortex5` temporal reservoir + 5-tap edge-stopping A-Trous denoiser) | **4.4× Near-Player Shadow Density** at `1024px` (`~4500px` equivalent clarity, zero Lego stair-stepping) |
 
 ---
 
-## What's New in v1.1 — Full Feature Suite
+## What's New in v2.0 — Real-Time Multi-Bounce Path Tracing
 
-`v1.1.0` adds 7 high-impact visual & PBR upgrades while keeping the exact same **54.4 MB/frame** 32-bit render graph (zero extra FBO passes):
+`v2.0.0` upgrades `NCM-Light` from 1-bounce deterministic RTGI to **Real-Time Multi-Bounce Demodulated Path Tracing (`NCM-PT v2.0`)** while staying **100% OpenGL 3.3 Core (`#version 120`)** with **zero compute shaders, zero SSBOs, and zero TAA smearing**:
 
-- **Multiscale Volumetric Clouds, Night Aurora & End Vortex**: Evaluates 3-step self-shadowed cumulus clouds, emerald-to-violet night Aurora Borealis, and an analytical End accretion vortex at `0.25×` resolution inside `composite1`'s idle sky pixels (`d >= 0.9999`), then refines cloud silver-lining edges in `final.glsl`.
-- **Vertex Waving Foliage & Shadows (`waving.glsl`)**: Root-locked grass/flowers/crops (`10100`) and continuous 3D canopy leaves/vines (`10101`) wave in both `gbuffers_terrain` and `shadow.vsh` at zero fragment-shader cost.
-- **Colored Stained-Glass Shadows (`COLORED_SHADOWS`)**: Reuses `shadowtex0 < shadowtex1` depth differences to project vivid RGB sunlight through stained glass onto blocks, water, and foliage (`0` extra fetches on open terrain).
-- **Water Wave Refraction & Underwater Caustics (`WATER_CAUSTICS`)**: Procedural dual-lattice caustic interference and shoreline-safe wave refraction on water surfaces and submerged terrain.
-- **Automatic `labPBR 1.3` Support (`LABPBR_SUPPORT`)**: Auto-detects `_n` normal maps and `_s` roughness/metal/emissive maps from PBR resource packs while falling back seamlessly to `IntegratedPBR` (`block.properties`).
-- **1-Click Profiles**: Instant **`Potato iGPU`**, **`Balanced`**, and **`Ultra`** presets directly in *Shader Pack Settings*.
+- **Cosine-Weighted Stratified R2/Halton Path Tracer (`tracePathGI`)**: Traces `1 / 2 / 4 spp` (`PT_SPP`) at `0.25×` resolution with temporal golden-ratio rotation (`frameCounter`) and analytical diffuse sky fallback for unoccluded rays.
+- **Shadow-Map Next Event Estimation (NEE)**: Secondary path hit vertices evaluate direct sun visibility (`evaluateSecondarySunNEE`) so sunlit walls, floors, and canyons bounce warm sunlight deep into shadowed interiors.
+- **Neumann Multi-Bounce Radiance Feedback (`PT_MULTI_BOUNCE`)**: Reprojects secondary hit positions into the persistent `0.25×` `RGBA16F` reservoir (`colortex5`, `colortex5Clear = false`) with a `0.55` energy-conservation cap, achieving infinite-bounce color bleeding without expensive multi-ray recursion.
+- **Temporal Reservoir + 5-Tap Edge-Stopping A-Trous Denoiser**: Reprojects previous-frame GI with depth-disocclusion rejection (`87%` temporal blend + Karis firefly compression) in `composite1`, followed by a 5-tap cross A-Trous normal/depth edge-stopping spatial filter (`denoisePathTracedGI`) in `composite2` — **zero texture blur, zero ghosting**.
+- **Built on v1.1.0 Full Feature Suite**: Retains Multiscale Volumetric Clouds, Night Aurora, End Vortex, Vertex Waving Foliage, Colored Stained-Glass Shadows, Water Wave Refraction & Caustics, Auto `labPBR 1.3`, and 1-Click Profiles (`Potato`, `Balanced`, `Ultra`).
 
 ---
 
@@ -75,9 +74,9 @@ Why does an office laptop with an **Intel UHD 620 / Iris Xe / AMD Vega iGPU** dr
 | Feature / Metric | Potato / "Vanilla+" Shaders | Mainstream Deferred PBR *(BSL / Complementary)* | Path-Traced / Voxel Packs *(SEUS PTGI / Rethinking)* | **NCM-Light (This Repo)** |
 | :--- | :---: | :---: | :---: | :---: |
 | **Minimum GPU API** | OpenGL 2.1 / 3.2 | OpenGL 3.3 – 4.3 | OpenGL 4.3+ / Compute / SSBO | **OpenGL 3.3 Core (`#version 120`)** |
-| **1080p FBO Traffic / Frame** | `~35 MB` | `~166 MB` (`RGBA16F ×5`) | `~248+ MB` + 3D Voxel Grid | **`54.4 MB` (`32-bit` HDR + `1/4` C1)** |
+| **1080p FBO Traffic / Frame** | `~35 MB` | `~166 MB` (`RGBA16F ×5`) | `~248+ MB` + 3D Voxel Grid | **`56.5 MB` (`32-bit` HDR + `1/4` PT)** |
 | **Post-GBuffer Passes** | `1 – 2` | `5 – 9` fullscreen passes | `10 – 18` compute/fullscreen | **`2` (`1/4` C1 + full C2) + Fused `final`** |
-| **Indirect GI & Color Bleeding** | ❌ None | ⚠️ Optional / High-preset only | ✅ Full multi-bounce | **✅ Omnidirectional RTGI (`0.50 taps/px`)** |
+| **Indirect GI & Color Bleeding** | ❌ None | ⚠️ Optional / High-preset only | ✅ Full multi-bounce | **✅ Multi-Bounce Neumann PT (`1/2/4 spp`)** |
 | **3D Crevice Ambient Occlusion** | ⚠️ Basic depth SSAO or none | ✅ Screen-space AO | ✅ Ray-traced AO | **✅ Sculpted Dual-Radius RTAO (Zero Halo)** |
 | **Mirror Reflections (RTR)** | ❌ Sky tint only | ✅ Linear SSR (`16–32` steps) | ✅ Path-traced | **✅ IntegratedPBR `5+3` Binary RTR (`≤8` taps)** |
 | **1024px Near Shadow Density** | `~8–16 texels/block` | `~28–35 texels/block` | Ray-traced / Hybrid | **`~36 texels/block` ($C^\infty$ Hyperbolic Warp)** |

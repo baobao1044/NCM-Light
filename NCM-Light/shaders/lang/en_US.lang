@@ -15,9 +15,18 @@ option.SHADOWS=Shadows
 value.SHADOWS.0=Off (screen-space shafts)
 value.SHADOWS.1=On (4.4x distorted shadow map)
 
-option.RT_GI=NCM Ray-Traced GI & AO
+option.RT_GI=NCM Path-Traced GI & AO
 value.RT_GI.0=Off
-value.RT_GI.1=On (1/4-res omni cascade)
+value.RT_GI.1=On (Demodulated Multi-Bounce PT)
+
+option.PT_SPP=Path Tracing Samples (SPP)
+value.PT_SPP.1=1 spp (Fast / iGPU)
+value.PT_SPP.2=2 spp (Balanced / Recommended)
+value.PT_SPP.4=4 spp (Ultra / Low Noise)
+
+option.PT_MULTI_BOUNCE=Multi-Bounce Neumann Feedback
+value.PT_MULTI_BOUNCE.0=Off (1-Bounce Direct GI)
+value.PT_MULTI_BOUNCE.1=On (Infinite Bounce Reservoir)
 
 option.RT_REFLECTIONS=NCM Ray-Traced Reflections
 value.RT_REFLECTIONS.0=Off
