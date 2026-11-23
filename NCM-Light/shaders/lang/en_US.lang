@@ -1,3 +1,7 @@
+profile.POTATO=Potato iGPU (Max FPS)
+profile.BALANCED=Balanced (Recommended)
+profile.ULTRA=Ultra (High Detail)
+
 option.DEBUG_LEVEL=Debug view
 value.DEBUG_LEVEL.0=Final image
 value.DEBUG_LEVEL.1=Coarsest level only (1/4 res)
@@ -6,15 +10,39 @@ value.DEBUG_LEVEL.3=Volumetric light only
 value.DEBUG_LEVEL.4=Depth & layer map
 value.DEBUG_LEVEL.5=Haze & shaft tint
 value.DEBUG_LEVEL.6=Ray-traced GI, RTAO & Reflections
+
 option.SHADOWS=Shadows
 value.SHADOWS.0=Off (screen-space shafts)
-value.SHADOWS.1=On (shadow map + RT contact)
+value.SHADOWS.1=On (4.4x distorted shadow map)
+
 option.RT_GI=NCM Ray-Traced GI & AO
 value.RT_GI.0=Off
-value.RT_GI.1=On (coarse-to-fine cascade)
+value.RT_GI.1=On (1/4-res omni cascade)
+
 option.RT_REFLECTIONS=NCM Ray-Traced Reflections
 value.RT_REFLECTIONS.0=Off
-value.RT_REFLECTIONS.1=On (water, glass & rain)
+value.RT_REFLECTIONS.1=On (water, glass, metals & rain)
+
+option.VOLUMETRIC_CLOUDS=NCM Volumetric Clouds
+value.VOLUMETRIC_CLOUDS.0=Off (clear sky + aurora)
+value.VOLUMETRIC_CLOUDS.1=On (multiscale cumulus)
+
+option.WAVING_FOLIAGE=Waving Foliage & Leaves
+value.WAVING_FOLIAGE.0=Off
+value.WAVING_FOLIAGE.1=On (vertex wind + shadows)
+
+option.COLORED_SHADOWS=Colored Stained-Glass Shadows
+value.COLORED_SHADOWS.0=Off
+value.COLORED_SHADOWS.1=On (RGB light projection)
+
+option.WATER_CAUSTICS=Water Caustics & Refraction
+value.WATER_CAUSTICS.0=Off
+value.WATER_CAUSTICS.1=On (wave refraction + caustics)
+
+option.LABPBR_SUPPORT=Auto labPBR 1.3 Textures
+value.LABPBR_SUPPORT.0=Off (IntegratedPBR only)
+value.LABPBR_SUPPORT.1=On (auto _n & _s detection)
+
 option.RT_STRENGTH=Ray tracing strength
 option.shadowMapResolution=Shadow resolution
 value.shadowMapResolution.512=512 (Potato / Max FPS)

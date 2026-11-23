@@ -7,12 +7,12 @@
 [![Shaderpack CI](https://github.com/baobao1044/NCM-Light/actions/workflows/ci.yml/badge.svg)](https://github.com/baobao1044/NCM-Light/actions/workflows/ci.yml)
 [![Download Latest ZIP](https://img.shields.io/github/v/release/baobao1044/NCM-Light?color=2ea043&label=Download%20NCM-Light.zip&logo=github)](https://github.com/baobao1044/NCM-Light/releases/latest)
 [![OpenGL 3.3 Core](https://img.shields.io/badge/OpenGL-3.3%20Core%20(%23version%20120)-1f6feb)](#hardware--compatibility)
-[![GLSL Permutations](https://img.shields.io/badge/Verified%20Shaders-152%2F152%20Passing-3fb950)](tools/check_pack.py)
+[![GLSL Permutations](https://img.shields.io/badge/Verified%20Shaders-164%2F164%20Passing-3fb950)](tools/check_pack.py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-d29922.svg)](LICENSE)
 
 **Zero Compute Shaders · Zero SSBOs · Zero TAA Smearing · Pure OpenGL 3.3 (`#version 120`) for Iris & OptiFine**
 
-[**⬇ Download `NCM-Light.zip` (v1.0.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**Visual Benchmark**](#visual-benchmark--multiscale-proof) · [**Why It's Fast**](#where-does-the-speed-come-from-7-core-optimizations) · [**Comparison**](#head-to-head-comparison) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
+[**⬇ Download `NCM-Light.zip` (v1.1.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**Visual Benchmark**](#visual-benchmark--multiscale-proof) · [**What's New in v1.1**](#whats-new-in-v11--full-feature-suite) · [**Why It's Fast**](#where-does-the-speed-come-from-7-core-optimizations) · [**Comparison**](#head-to-head-comparison) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
 
 </div>
 
@@ -21,6 +21,19 @@
 | **`54.4 MB / frame`** | **`1.84 taps / px`** | **`0.50 taps / px`** | **`~36 texels / block`** |
 | :---: | :---: | :---: | :---: |
 | **-67% DRAM Bandwidth** @ 1080p vs. standard `RGBA16F` PBR packs (`3.0×` lighter on shared DDR4 iGPUs) | **-98.6% Volumetric Taps** vs. 128-tap ground truth (`MAE = 0.0029`) via NCM telescoping residuals | **-96.9% GI/AO Depth Taps** via `0.25×` omnidirectional probing + `85%` 1-tap hardware bilinear fast path | **4.4× Near-Player Shadow Density** at `1024px` (`~4500px` equivalent clarity, zero Lego stair-stepping) |
+
+---
+
+## What's New in v1.1 — Full Feature Suite
+
+`v1.1.0` adds 7 high-impact visual & PBR upgrades while keeping the exact same **54.4 MB/frame** 32-bit render graph (zero extra FBO passes):
+
+- **Multiscale Volumetric Clouds, Night Aurora & End Vortex**: Evaluates 3-step self-shadowed cumulus clouds, emerald-to-violet night Aurora Borealis, and an analytical End accretion vortex at `0.25×` resolution inside `composite1`'s idle sky pixels (`d >= 0.9999`), then refines cloud silver-lining edges in `final.glsl`.
+- **Vertex Waving Foliage & Shadows (`waving.glsl`)**: Root-locked grass/flowers/crops (`10100`) and continuous 3D canopy leaves/vines (`10101`) wave in both `gbuffers_terrain` and `shadow.vsh` at zero fragment-shader cost.
+- **Colored Stained-Glass Shadows (`COLORED_SHADOWS`)**: Reuses `shadowtex0 < shadowtex1` depth differences to project vivid RGB sunlight through stained glass onto blocks, water, and foliage (`0` extra fetches on open terrain).
+- **Water Wave Refraction & Underwater Caustics (`WATER_CAUSTICS`)**: Procedural dual-lattice caustic interference and shoreline-safe wave refraction on water surfaces and submerged terrain.
+- **Automatic `labPBR 1.3` Support (`LABPBR_SUPPORT`)**: Auto-detects `_n` normal maps and `_s` roughness/metal/emissive maps from PBR resource packs while falling back seamlessly to `IntegratedPBR` (`block.properties`).
+- **1-Click Profiles**: Instant **`Potato iGPU`**, **`Balanced`**, and **`Ultra`** presets directly in *Shader Pack Settings*.
 
 ---
 
@@ -151,7 +164,7 @@ Don't take our word for it — inspect every internal pass live inside **Video S
 
 ## Reproducible Verification & Build Suite
 
-Every commit and release is automatically verified by [`simulate_levels.py`](tools/simulate_levels.py) and [`check_pack.py`](tools/check_pack.py) (which enforces `#version 120` compliance, OpenGL 3.3 blend compatibility, Iris `CommentDirectiveParser` `lastIndexOf` safety, and compiles all **152 GLSL shader permutations** across Overworld, Nether, and End via `glslangValidator`):
+Every commit and release is automatically verified by [`simulate_levels.py`](tools/simulate_levels.py) and [`check_pack.py`](tools/check_pack.py) (which enforces `#version 120` compliance, OpenGL 3.3 blend compatibility, Iris `CommentDirectiveParser` `lastIndexOf` safety, and compiles all **164 GLSL shader permutations** across Overworld, Nether, and End via `glslangValidator`):
 
 ```bash
 # 1. Verify multiscale optical-depth convergence & cascade tap savings
@@ -180,12 +193,12 @@ python tools/package_pack.py NCM-Light NCM-Light.zip
 1. Tải file [**`NCM-Light.zip`**](https://github.com/baobao1044/NCM-Light/releases/latest) và thả vào thư mục `.minecraft/shaderpacks/` (hoặc thư mục `shaderpacks` của profile Modrinth / CurseForge).
 2. Vào game: **Options → Video Settings → Shader Packs** → chọn **`NCM-Light.zip`** → nhấn **Apply**.
 
-### Cấu hình khuyên dùng theo phần cứng
-| Cấu hình máy | Thiết lập khuyên dùng trong *Shader Pack Settings* |
+### Cấu hình khuyên dùng theo phần cứng (hoặc chọn nhanh Profile 1-Click)
+| Profile / Cấu hình máy | Thiết lập khuyên dùng trong *Shader Pack Settings* |
 | :--- | :--- |
-| **iGPU yếu (Intel UHD 620 / HD 520, Render Distance 12–16)** | Hạ **Shadow resolution** xuống **`512`** (nhờ nén `4.4×` bóng vẫn đạt `~18 texels/block` rất mịn, FPS tăng vọt!) |
-| **Laptop Iris Xe / AMD Vega / GTX 1050+** | Giữ nguyên **Mặc định (`1024`)** — cân bằng hoàn hảo giữa tốc độ và độ nét |
-| **RTX / RX rời muốn soi chi tiết tối đa** | Bật **Shadow resolution = `2048`**, kéo **Ray tracing strength = `1.25`** |
+| **`Potato iGPU (Max FPS)` — Intel UHD 620 / HD 520** | Chọn sẵn Profile **`Potato iGPU`** (`Shadow = 512`, `RT_GI = Off`, giữ nguyên mây thể tích, phản chiếu nước, gió thổi cỏ lá & caustics) |
+| **`Balanced (Recommended)` — Iris Xe / Vega / GTX 1050+** | Chọn Profile **`Balanced`** (Mặc định: `Shadow = 1024`, đầy đủ RTGI/RTAO, bóng kính màu & `labPBR 1.3`) |
+| **`Ultra (High Detail)` — RTX / RX rời** | Chọn Profile **`Ultra`** (`Shadow = 2048`, `RT_STRENGTH = 1.25`, `REFINE_THRESHOLD = 0.05`) |
 
 ---
 

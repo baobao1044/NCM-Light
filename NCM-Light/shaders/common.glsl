@@ -12,6 +12,7 @@
     const int colortex2Format = RGBA8;
     const int colortex3Format = RGBA8;
     const int colortex4Format = R11F_G11F_B10F;
+    const int shadowcolor0Format = RGBA8;
     const float shadowIntervalSize = 2.0;
     const float shadowDistanceRenderMul = 1.0;
 */
@@ -19,23 +20,7 @@
 #ifndef NCM_COMMON_GLSL
 #define NCM_COMMON_GLSL
 
-/* ============================== Options ============================== */
-
-#define FOG_STRENGTH 1.0            // [0.0 0.25 0.5 0.75 1.0 1.5 2.0 3.0]
-#define RAYS_STRENGTH 1.0           // [0.0 0.25 0.5 0.75 1.0 1.5 2.0 3.0]
-#define DENSITY_SCALE 1.0           // [0.25 0.5 0.75 1.0 1.5 2.0 3.0]
-#define SUN_SCATTER 0.8             // [0.0 0.2 0.35 0.5 0.65 0.8 0.9]
-#define RT_GI 1                     // [0 1]
-#define RT_REFLECTIONS 1            // [0 1]
-#define RT_STRENGTH 1.0             // [0.0 0.25 0.5 0.75 1.0 1.25 1.5 2.0]
-#define REFINE_THRESHOLD 0.08       // [0.0 0.02 0.05 0.08 0.12 0.2 0.35 0.5]
-#define REFINE_SOFTNESS 0.15        // [0.0 0.05 0.1 0.15 0.25 0.4]
-#define DEBUG_LEVEL 0               // [0 1 2 3 4 5 6]
-#define SHADOWS 1                   // [0 1]
-
-const int shadowMapResolution = 1024; // [512 1024 2048 4096]
-const float shadowDistance = 56.0;
-const float SHADOW_DISTORT = 0.78;
+#include "/options.glsl"
 
 /* ============================= Constants ============================= */
 
@@ -75,6 +60,7 @@ uniform sampler2D depthtex1;
 uniform sampler2D depthtex2;
 uniform sampler2D shadowtex0;
 uniform sampler2D shadowtex1;
+uniform sampler2D shadowcolor0;
 
 uniform mat4 gbufferProjection;
 uniform mat4 gbufferProjectionInverse;
@@ -391,12 +377,12 @@ vec3 distortShadowNDC(vec3 ndc) {
     return vec3(ndc.xy / factor, ndc.z * 0.5);
 }
 
-float surfaceShadow(vec3 playerPos, vec3 worldNormal, bool isFoliage) {
+vec3 surfaceShadowColored(vec3 playerPos, vec3 worldNormal, bool isFoliage) {
 #if defined(DIMENSION_NETHER) || defined(DIMENSION_END)
-    return 1.0;
+    return vec3(1.0);
 #else
     float dist2 = dot(playerPos, playerPos);
-    if (dist2 > shadowDistance * shadowDistance) return 1.0;
+    if (dist2 > shadowDistance * shadowDistance) return vec3(1.0);
 
     float dist = sqrt(dist2);
     vec3 lightDir = worldShadowLightDir();
@@ -404,7 +390,6 @@ float surfaceShadow(vec3 playerPos, vec3 worldNormal, bool isFoliage) {
     float ndotl = dot(effNormal, lightDir);
     float distScale = 1.0 + dist * 0.035;
     float normalScale = (ndotl < 0.0) ? 0.032 : (0.030 + 0.045 * (1.0 - ndotl));
-    /* Extra light-ray offset on cross-plane foliage prevents ugly X-mesh self-shadowing! */
     float sunOffset = isFoliage ? 0.20 : (0.025 * distScale);
     vec3 biasedPos = playerPos
                    + effNormal * (normalScale * distScale)
@@ -413,7 +398,7 @@ float surfaceShadow(vec3 playerPos, vec3 worldNormal, bool isFoliage) {
     vec4 shadowClip = shadowProjection * (shadowModelView * vec4(biasedPos, 1.0));
     vec3 preNDC = shadowClip.xyz;
     float rawEdge = max(abs(preNDC.x), abs(preNDC.y));
-    if (rawEdge > 0.98 || preNDC.z > 1.0 || preNDC.z < -1.0) return 1.0;
+    if (rawEdge > 0.98 || preNDC.z > 1.0 || preNDC.z < -1.0) return vec3(1.0);
 
     vec3 dNDC = distortShadowNDC(preNDC);
     vec2 suv = dNDC.xy * 0.5 + 0.5;
@@ -437,9 +422,26 @@ float surfaceShadow(vec3 playerPos, vec3 worldNormal, bool isFoliage) {
     float s11 = step(sampleZ, z11);
 
     vec2 w = fracTex * fracTex * (3.0 - 2.0 * fracTex);
-    float lit = mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
+    float opaqueLit = mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
+    float edgeFade = smoothstep(0.82, 0.98, rawEdge);
+    opaqueLit = mix(opaqueLit, 1.0, edgeFade);
 
-    return mix(lit, 1.0, smoothstep(0.82, 0.98, rawEdge));
+    if (opaqueLit <= 0.004) return vec3(0.0);
+
+#if COLORED_SHADOWS
+    float zAll = texture2D(shadowtex0, suv).r;
+    if (zAll < sampleZ) {
+        vec4 sCol = texture2D(shadowcolor0, suv);
+        if (sCol.a > 0.96) return vec3(0.0);
+        vec3 glassLin = srgbToLinear(sCol.rgb);
+        float gLum = dot(glassLin, vec3(0.2126, 0.7152, 0.0722));
+        vec3 vivid = clamp(mix(vec3(gLum), glassLin, 1.35) * 1.45, vec3(0.0), vec3(1.2));
+        vec3 transTint = mix(vec3(1.0), vivid * (1.0 - 0.45 * sCol.a), clamp(sCol.a * 1.35, 0.0, 0.96));
+        return mix(transTint, vec3(1.0), edgeFade) * opaqueLit;
+    }
+#endif
+
+    return vec3(opaqueLit);
 #endif
 }
 
@@ -710,6 +712,156 @@ vec3 evaluateGGXSpecular(vec3 worldNormal, vec3 viewDirToSurface, vec3 lightDir,
     return vec3(min(D * F * ndotl * 0.32, 1.6));
 }
 
+/* == Multiscale Volumetric Clouds, Night Aurora & End Accretion Vortex == */
+
+float cloudHash21(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float cloudNoise2D(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = cloudHash21(i);
+    float b = cloudHash21(i + vec2(1.0, 0.0));
+    float c = cloudHash21(i + vec2(0.0, 1.0));
+    float d = cloudHash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float cloudFBM(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    mat2 rot = mat2(0.80, -0.60, 0.60, 0.80);
+    for (int i = 0; i < 4; i++) {
+        v += a * cloudNoise2D(p);
+        p = rot * p * 2.05 + vec2(17.1, 31.7);
+        a *= 0.5;
+    }
+    return v;
+}
+
+vec4 evaluateVolumetricSkyL0(vec3 dir) {
+#if defined(DIMENSION_NETHER)
+    return vec4(0.0, 0.0, 0.0, 1.0);
+#elif defined(DIMENSION_END)
+    float angle = atan(dir.z, dir.x);
+    float elev = abs(dir.y);
+    float swirl = sin(angle * 3.0 + elev * 8.5 - frameTimeCounter * 0.18) * 0.5 + 0.5;
+    float fbm = cloudFBM(dir.xz / max(elev + 0.35, 0.35) * 1.8 + vec2(frameTimeCounter * 0.04, -frameTimeCounter * 0.03));
+    float ring = exp(-pow((elev - 0.32) / 0.24, 2.0));
+    vec3 vortexCol = mix(vec3(0.06, 0.02, 0.14), vec3(0.32, 0.10, 0.52), swirl * fbm);
+    vec3 coreGlow = vec3(0.55, 0.24, 0.85) * (ring * fbm * 0.42);
+    float starHash = cloudHash21(floor(dir.xz / max(abs(dir.y) + 0.25, 0.25) * 90.0));
+    float stars = smoothstep(0.992, 0.999, starHash) * smoothstep(0.10, 0.45, elev);
+    return vec4(vortexCol * 0.45 + coreGlow + vec3(0.75, 0.65, 1.0) * (stars * 0.85), 0.92);
+#else
+    vec3 skyAdd = vec3(0.0);
+    float skyTrans = 1.0;
+
+    float up = sunElevation();
+    float nightMask = smoothstep(-0.04, -0.22, up) * (1.0 - smoothstep(0.25, 0.70, rainStrength));
+    if (nightMask > 0.01 && dir.y > 0.05) {
+        vec2 ap = dir.xz / (dir.y + 0.20);
+        float curtain1 = sin(ap.x * 2.4 + sin(ap.y * 1.7 + frameTimeCounter * 0.08) * 1.5);
+        float curtain2 = cos(ap.y * 2.1 - cos(ap.x * 1.4 - frameTimeCounter * 0.06) * 1.3);
+        float wave = smoothstep(0.15, 0.95, 0.5 + 0.5 * curtain1 * curtain2);
+        float elevFade = smoothstep(0.05, 0.26, dir.y) * (1.0 - smoothstep(0.45, 0.92, dir.y));
+        vec3 auroraCol = mix(vec3(0.06, 0.65, 0.34), vec3(0.30, 0.12, 0.62), smoothstep(0.12, 0.55, dir.y));
+        skyAdd += auroraCol * (wave * elevFade * nightMask * 0.48);
+    }
+
+#if VOLUMETRIC_CLOUDS
+    if (dir.y > 0.025) {
+        float baseH = max(192.0, cameraPosition.y + 42.0);
+        float thickH = 48.0;
+        float t0 = (baseH - cameraPosition.y) / dir.y;
+        float t1 = (baseH + thickH - cameraPosition.y) / dir.y;
+        if (t0 > 0.0 && t0 < 2400.0) {
+            float coverage = mix(0.46, 0.78, clamp(rainStrength, 0.0, 1.0));
+            vec2 wind = vec2(frameTimeCounter * 2.2, frameTimeCounter * 0.85);
+            vec3 sunDir = worldShadowLightDir();
+            float sunCos = max(dot(dir, sunDir), 0.0);
+            float hgSilver = 0.35 + 1.35 * (sunCos * sunCos * sunCos * sunCos);
+
+            float day = smoothstep(-0.08, 0.24, up);
+            vec3 sunTint = directCelestialIrradiance();
+            vec3 ambCloud = mix(vec3(0.04, 0.06, 0.12), vec3(0.44, 0.58, 0.84), day);
+            vec3 cloudCol = vec3(0.0);
+
+            for (int i = 0; i < 3; i++) {
+                float frac = (float(i) + 0.5) / 3.0;
+                float t = mix(t0, t1, frac);
+                vec3 p = cameraPosition + dir * t;
+                float densBase = cloudFBM((p.xz + wind) * 0.0038);
+                float heightProfile = 1.0 - abs(frac * 2.0 - 1.0);
+                float dens = smoothstep(1.0 - coverage, 1.0 - coverage + 0.28, densBase) * (0.45 + 0.55 * heightProfile);
+                if (dens > 0.002) {
+                    float sunDens = cloudFBM((p.xz + sunDir.xz * 22.0 + wind) * 0.0038);
+                    float shadowMask = exp(-max(sunDens - (1.0 - coverage), 0.0) * 2.8);
+                    vec3 stepLight = ambCloud * (0.48 + 0.35 * frac) + sunTint * (shadowMask * hgSilver * 0.55);
+                    float stepAlpha = 1.0 - exp(-dens * 1.15);
+                    cloudCol += skyTrans * stepLight * stepAlpha;
+                    skyTrans *= (1.0 - stepAlpha);
+                }
+            }
+
+            float horizonFade = smoothstep(0.025, 0.16, dir.y);
+            skyAdd += cloudCol * horizonFade;
+            skyTrans = mix(1.0, skyTrans, horizonFade);
+        }
+    }
+#endif
+
+    return vec4(skyAdd, skyTrans);
+#endif
+}
+
+vec4 evaluateCloudEdgeRefine(vec3 dir) {
+#if !VOLUMETRIC_CLOUDS || defined(DIMENSION_NETHER) || defined(DIMENSION_END)
+    return vec4(0.0, 0.0, 0.0, 1.0);
+#else
+    if (dir.y <= 0.025) return vec4(0.0, 0.0, 0.0, 1.0);
+    float baseH = max(192.0, cameraPosition.y + 42.0);
+    float tMid = (baseH + 24.0 - cameraPosition.y) / dir.y;
+    if (tMid <= 0.0 || tMid >= 2400.0) return vec4(0.0, 0.0, 0.0, 1.0);
+
+    float coverage = mix(0.46, 0.78, clamp(rainStrength, 0.0, 1.0));
+    vec2 wind = vec2(frameTimeCounter * 2.2, frameTimeCounter * 0.85);
+    vec3 p = cameraPosition + dir * tMid;
+    float dens = smoothstep(1.0 - coverage, 1.0 - coverage + 0.26, cloudFBM((p.xz + wind) * 0.0038));
+    float alpha = (1.0 - exp(-dens * 1.65)) * smoothstep(0.025, 0.16, dir.y);
+
+    vec3 sunDir = worldShadowLightDir();
+    float sunCos = max(dot(dir, sunDir), 0.0);
+    float hgSilver = 0.35 + 1.35 * (sunCos * sunCos * sunCos * sunCos);
+    float day = smoothstep(-0.08, 0.24, sunElevation());
+    vec3 ambCloud = mix(vec3(0.04, 0.06, 0.12), vec3(0.44, 0.58, 0.84), day);
+    vec3 col = (ambCloud * 0.65 + directCelestialIrradiance() * (hgSilver * 0.42)) * alpha;
+    return vec4(col, 1.0 - alpha);
+#endif
+}
+
+/* ======= Procedural Water Caustics (Zero Texture Reads) ======= */
+
+vec3 evaluateWaterCaustics(vec3 floorWorldPos, vec3 lightDir, float waterDepth, float sunLit) {
+#if !WATER_CAUSTICS || defined(DIMENSION_NETHER) || defined(DIMENSION_END)
+    return vec3(0.0);
+#else
+    if (sunLit <= 0.01 || waterDepth <= 0.04) return vec3(0.0);
+    vec2 p = floorWorldPos.xz - floorWorldPos.y * (lightDir.xz / max(lightDir.y, 0.28));
+    float t = frameTimeCounter * 1.45;
+    float w1 = sin(p.x * 2.3 + p.y * 1.4 + t) * cos(p.y * 2.1 - p.x * 1.2 - t * 0.8);
+    float w2 = sin(p.x * 1.6 - p.y * 2.5 - t * 1.1) * cos(p.y * 1.8 + p.x * 1.9 + t * 0.9);
+    float c = clamp(1.0 - abs(w1 + w2), 0.0, 1.0);
+    c = c * c * c;
+    float depthMask = smoothstep(0.04, 0.55, waterDepth) / (1.0 + 0.10 * waterDepth);
+    return directCelestialIrradiance() * vec3(0.55, 0.88, 1.05) * (c * depthMask * sunLit * 1.10);
+#endif
+}
+
 /* ======= Coherent Speckle-Free 5+3 Binary Ray-Traced Reflections ======= */
 
 vec3 waterWaveNormal(vec2 worldXZ) {
@@ -727,7 +879,21 @@ vec3 analyticSkyReflectionLinear(vec3 worldReflectDir) {
     float up = sunElevation();
     float day = smoothstep(-0.08, 0.26, up);
     vec3 zenith = mix(vec3(0.008, 0.016, 0.042), vec3(0.14, 0.34, 0.82), day);
-    return mix(hazeTintLinear(), zenith, horizon);
+    vec3 baseSky = mix(hazeTintLinear(), zenith, horizon);
+#if VOLUMETRIC_CLOUDS
+    if (worldReflectDir.y > 0.05) {
+        float baseH = max(192.0, cameraPosition.y + 42.0);
+        float tC = (baseH + 20.0 - cameraPosition.y) / worldReflectDir.y;
+        if (tC > 0.0 && tC < 2200.0) {
+            vec2 cXZ = (cameraPosition + worldReflectDir * tC).xz + vec2(frameTimeCounter * 2.2, frameTimeCounter * 0.85);
+            float cov = mix(0.46, 0.78, clamp(rainStrength, 0.0, 1.0));
+            float cDens = smoothstep(1.0 - cov, 1.0 - cov + 0.28, cloudNoise2D(cXZ * 0.0038)) * smoothstep(0.05, 0.22, worldReflectDir.y);
+            vec3 cCol = mix(vec3(0.05, 0.08, 0.16), vec3(0.72, 0.78, 0.88), day);
+            baseSky = mix(baseSky, cCol, cDens * 0.65);
+        }
+    }
+#endif
+    return baseSky;
 #endif
 }
 

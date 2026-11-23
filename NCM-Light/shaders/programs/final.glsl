@@ -22,6 +22,47 @@ void main() {
 
 varying vec2 texcoord;
 
+void gatherVolumetricSky(vec2 uv, out vec3 skyScatHDR, out float skyTrans, out float borderContrast) {
+    vec2 coarseRes = max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
+    vec2 invCoarse = 1.0 / coarseRes;
+    vec2 fCoord = uv * coarseRes - 0.5;
+    vec2 baseIdx = floor(fCoord);
+    vec2 f = clamp(fCoord - baseIdx, 0.0, 1.0);
+    vec2 uv00 = (baseIdx + 0.5) * invCoarse;
+
+    vec3 sumScat = vec3(0.0);
+    float sumTrans = 0.0;
+    float wSum = 0.0;
+    float minT = 1.0;
+    float maxT = 0.0;
+
+    for (int iy = 0; iy < 2; iy++) {
+        for (int ix = 0; ix < 2; ix++) {
+            vec2 off = vec2(float(ix), float(iy));
+            vec2 cuv = clamp(uv00 + off * invCoarse, 0.002, 0.998);
+            if (texture2D(depthtex0, cuv).r < 0.9999) continue;
+            float bW = ((ix == 0) ? (1.0 - f.x) : f.x) * ((iy == 0) ? (1.0 - f.y) : f.y) + 0.01;
+            float tVal = clamp(texture2D(colortex1, cuv).y, 0.0, 1.0);
+            sumTrans += tVal * bW;
+            sumScat  += texture2D(colortex4, cuv).rgb * bW;
+            wSum += bW;
+            minT = min(minT, tVal);
+            maxT = max(maxT, tVal);
+        }
+    }
+
+    if (wSum > 1e-4) {
+        float invW = 1.0 / wSum;
+        skyScatHDR = max(sumScat * invW, vec3(0.0));
+        skyTrans = clamp(sumTrans * invW, 0.0, 1.0);
+        borderContrast = maxT - minT;
+    } else {
+        skyScatHDR = vec3(0.0);
+        skyTrans = 1.0;
+        borderContrast = 0.0;
+    }
+}
+
 void main() {
     vec4 hdrColor = texture2D(colortex0, texcoord);
     vec4 state = texture2D(colortex2, texcoord);
@@ -117,6 +158,20 @@ void main() {
         }
     }
 #endif
+
+    /* 2b. Multiscale Volumetric Clouds, Night Aurora & End Vortex (Sky-Masked 2x2 Gather + Edge Refine) */
+    if (noGeometry) {
+        vec3 skyScatHDR;
+        float skyTrans, borderContrast;
+        gatherVolumetricSky(texcoord, skyScatHDR, skyTrans, borderContrast);
+        if (borderContrast > 0.18 && DEBUG_LEVEL != 1) {
+            vec4 edgeRef = evaluateCloudEdgeRefine(dir);
+            skyScatHDR = mix(skyScatHDR, edgeRef.rgb, 0.35);
+            skyTrans = mix(skyTrans, edgeRef.a, 0.35);
+        }
+        sceneHDR = sceneHDR * skyTrans + skyScatHDR;
+        reflWork = max(reflWork, smoothstep(0.18, 0.45, borderContrast) * 0.55);
+    }
 
     float haze = analyticHaze(dir, tHit, skyWeights.x);
 #if DEBUG_LEVEL != 6

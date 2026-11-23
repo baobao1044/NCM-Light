@@ -129,25 +129,36 @@ void main() {
     } else if (isTranslucent) {
         float tBlock = transTag.y;
         float tSky   = transTag.z;
-        float lit = 1.0;
+        vec3 shadowRGB = vec3(1.0);
 #if SHADOWS && !defined(DIMENSION_NETHER) && !defined(DIMENSION_END)
         float outW = smoothstep(0.08, 0.45, tSky) * directLightWeatherFade();
         if (outW > 0.002) {
-            lit = mix(1.0, surfaceShadow(camRel, vec3(0.0, 1.0, 0.0), false), outW);
+            shadowRGB = mix(vec3(1.0), surfaceShadowColored(camRel, vec3(0.0, 1.0, 0.0), false), outW);
         } else {
-            lit = 0.0;
+            shadowRGB = vec3(0.0);
         }
 #endif
         vec3 amb = max(skyAmbientIrradiance() * (tSky * tSky), vec3(0.024));
-        vec3 sun = directCelestialIrradiance() * (lit * 0.65);
+        vec3 sun = directCelestialIrradiance() * shadowRGB * 0.65;
         vec3 trc = vec3(1.00, 0.56, 0.22) * (tBlock * tBlock * (0.65 + 1.85 * tBlock));
         vec3 transIrr = amb + sun + trc;
 
         if (isLiquidWater) {
             float waterDepth = max(-fastViewZ(dOpaque) - (-viewPos.z), 0.0);
+            vec3 worldWaterPos = camRel + cameraPosition;
+            vec2 waveOff = waterWaveNormal(worldWaterPos.xz).xz * clamp(waterDepth * 0.035, 0.0, 0.014);
+            vec2 rUV = clamp(texcoord + waveOff, 0.002, 0.998);
+            if (texture2D(depthtex0, rUV).r < texture2D(depthtex1, rUV).r - 1e-5) {
+                albedoLin = srgbToLinear(texture2D(colortex0, rUV).rgb);
+                dOpaque = texture2D(depthtex1, rUV).r;
+            }
             float wAbs = (waterDepth * 0.26) / (1.0 + waterDepth * 0.26);
             vec3 absorb = mix(vec3(1.0), vec3(0.14, 0.52, 0.68), clamp(wAbs, 0.0, 0.88));
-            hdrScene = albedoLin * absorb * transIrr;
+            vec3 floorView = viewFromDepth(rUV, dOpaque);
+            vec3 floorRel = mat3(gbufferModelViewInverse) * floorView;
+            float litScalar = dot(shadowRGB, vec3(0.3333));
+            vec3 caustics = evaluateWaterCaustics(floorRel + cameraPosition, worldShadowLightDir(), waterDepth, litScalar);
+            hdrScene = albedoLin * absorb * (transIrr + caustics);
         } else {
             hdrScene = albedoLin * transIrr;
         }
@@ -167,15 +178,16 @@ void main() {
             ? clamp(rawNdotL * 0.38 + 0.62, 0.35, 1.0)
             : max(rawNdotL, 0.0);
 
-        float lit = 1.0;
-#if SHADOWS && !defined(DIMENSION_NETHER) && !defined(DIMENSION_END)
+        vec3 shadowRGB = vec3(1.0);
         float outdoorW = smoothstep(0.08, 0.45, skyLight) * directLightWeatherFade();
+#if SHADOWS && !defined(DIMENSION_NETHER) && !defined(DIMENSION_END)
         if (outdoorW > 0.002 && (ndotl > 0.001 || isFoliage)) {
-            lit = mix(1.0, surfaceShadow(camRel, worldNormal, isFoliage), outdoorW);
+            shadowRGB = mix(vec3(1.0), surfaceShadowColored(camRel, worldNormal, isFoliage), outdoorW);
         } else if (outdoorW <= 0.002) {
-            lit = 0.0;
+            shadowRGB = vec3(0.0);
         }
 #endif
+        float litScalar = dot(shadowRGB, vec3(0.3333));
 
         /* Sculpted RTAO: preserves deep crevice contrast while keeping a hint of bounce hue */
         float aoApplied = clamp(mix(1.0, estAO, clamp(RT_STRENGTH * 1.25, 0.0, 1.7)), 0.18, 1.0);
@@ -188,20 +200,24 @@ void main() {
         vec3 minCaveAmb = vec3(0.024, 0.026, 0.034) * aoApplied;
 
         vec3 sunCol = directCelestialIrradiance();
-        vec3 directTerm = sunCol * (ndotl * lit);
+        vec3 directTerm = sunCol * (ndotl * shadowRGB);
 
         /* Subsurface scattering on sunlit leaves & grass + GGX specular highlight on ALL blocks! */
         vec3 specTerm = vec3(0.0);
-        if (lit > 0.02) {
+        if (litScalar > 0.02) {
             if (isFoliage) {
                 float blDot = clamp(dot(dir, lightDir), 0.0, 1.0);
-                directTerm += sunCol * vec3(0.58, 0.92, 0.32) * (blDot * blDot * lit * 0.52);
-                specTerm = sunCol * evaluateGGXSpecular(worldNormal, dir, lightDir, 0.44, 0.038) * lit;
+                directTerm += sunCol * vec3(0.58, 0.92, 0.32) * shadowRGB * (blDot * blDot * 0.52);
+                specTerm = sunCol * shadowRGB * evaluateGGXSpecular(worldNormal, dir, lightDir, 0.44, 0.038);
             } else {
                 float rough = isMetal ? 0.22 : (isGlossy ? 0.26 : 0.62);
                 float f0Val = isMetal ? 0.65 : (isGlossy ? 0.06 : 0.032);
-                specTerm = sunCol * evaluateGGXSpecular(worldNormal, dir, lightDir, rough, f0Val) * lit;
+                specTerm = sunCol * shadowRGB * evaluateGGXSpecular(worldNormal, dir, lightDir, rough, f0Val);
             }
+        }
+
+        if (isEyeInWater == 1) {
+            directTerm += evaluateWaterCaustics(camRel + cameraPosition, lightDir, (-viewPos.z) * 0.35 + 1.2, litScalar * outdoorW);
         }
 
         /* Subtle grazing-angle sky Fresnel rim on foliage & blocks for lush 3D surface sheen */

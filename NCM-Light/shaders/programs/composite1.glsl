@@ -93,15 +93,21 @@ void main() {
     float ao0 = 1.0;
     float edgeGate0 = 0.0;
 
+    if (noGeometry) {
+        vec4 vSky = evaluateVolumetricSkyL0(dir);
+        gi0 = vSky.rgb;
+        ao0 = vSky.a;
+    } else {
 #if RT_GI
-    if (hasSurf && RT_STRENGTH > 0.001 && (-viewPos.z) < 40.0) {
-        vec3 viewN = normalize(mat3(gbufferModelView) * worldN);
-        vec4 rt0 = traceOmniHemisphereRT(viewPos, viewN);
-        gi0 = rt0.rgb;
-        ao0 = rt0.a;
-        edgeGate0 = clamp(max(edges.x * 0.80, edges.y * 0.90), 0.0, 1.0);
-    }
+        if (hasSurf && RT_STRENGTH > 0.001 && (-viewPos.z) < 40.0) {
+            vec3 viewN = normalize(mat3(gbufferModelView) * worldN);
+            vec4 rt0 = traceOmniHemisphereRT(viewPos, viewN);
+            gi0 = rt0.rgb;
+            ao0 = rt0.a;
+            edgeGate0 = clamp(max(edges.x * 0.80, edges.y * 0.90), 0.0, 1.0);
+        }
 #endif
+    }
 
     gl_FragData[0] = vec4(rays0, ao0, volGate0, edgeGate0);
     gl_FragData[1] = vec4(gi0, 1.0);

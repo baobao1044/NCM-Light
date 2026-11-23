@@ -166,6 +166,7 @@ def properties_and_lang_checks(shaders_dir, overworld_programs):
     problems = []
     props = os.path.join(shaders_dir, "shaders.properties")
     screen_opts = []
+    profiles = {}
     written_by_pass = {}
 
     for pname, stages in overworld_programs.items():
@@ -199,28 +200,39 @@ def properties_and_lang_checks(shaders_dir, overworld_programs):
             if line.startswith("screen"):
                 _, rhs = line.split("=", 1)
                 screen_opts = [tok for tok in rhs.split() if tok != "<empty>"]
+            elif line.startswith("profile."):
+                pname, rhs = line.split("=", 1)
+                profiles[pname.strip()] = rhs.strip().split()
 
-    common = os.path.join(shaders_dir, "common.glsl")
     declared = {}
-    if not os.path.isfile(common):
-        problems.append("common.glsl: missing")
-    else:
-        with open(common, "r", encoding="utf-8") as handle:
-            for line in handle:
-                m1 = OPTION_RE.match(line)
-                if m1:
-                    opt, val = m1.group(1), m1.group(2)
-                    if opt in declared:
-                        problems.append("option %s declared twice" % opt)
-                    declared[opt] = val
-                m2 = CONST_OPTION_RE.match(line)
-                if m2:
-                    opt, val = m2.group(1), m2.group(2)
-                    declared[opt] = val
+    for opt_file in ("options.glsl", "common.glsl"):
+        opath = os.path.join(shaders_dir, opt_file)
+        if os.path.isfile(opath):
+            with open(opath, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    m1 = OPTION_RE.match(line)
+                    if m1:
+                        opt, val = m1.group(1), m1.group(2)
+                        if opt in declared:
+                            problems.append("option %s declared twice" % opt)
+                        declared[opt] = val
+                    m2 = CONST_OPTION_RE.match(line)
+                    if m2:
+                        opt, val = m2.group(1), m2.group(2)
+                        declared[opt] = val
 
+    if not declared:
+        problems.append("options.glsl / common.glsl: no options declared")
+    else:
         for opt in screen_opts:
             if opt not in declared:
-                problems.append("shaders.properties screen option %r not declared in common.glsl" % opt)
+                problems.append("shaders.properties screen option %r not declared in options.glsl/common.glsl" % opt)
+        for pname, assigns in profiles.items():
+            for tok in assigns:
+                if "=" in tok:
+                    k = tok.split("=", 1)[0].strip()
+                    if k not in declared:
+                        problems.append("shaders.properties %s references undeclared option %r" % (pname, k))
 
     for lang_file in ("en_US.lang", "vi_VN.lang"):
         lpath = os.path.join(shaders_dir, "lang", lang_file)
@@ -232,6 +244,9 @@ def properties_and_lang_checks(shaders_dir, overworld_programs):
         for opt in screen_opts:
             if ("option.%s" % opt) not in keys:
                 problems.append("lang/%s: missing label option.%s" % (lang_file, opt))
+        for pname in profiles:
+            if pname not in keys:
+                problems.append("lang/%s: missing label %s" % (lang_file, pname))
 
     return problems
 
@@ -318,20 +333,30 @@ def glsl_checks(shaders_dir, dim_sets, glslang, workdir):
                 if err:
                     problems.append(err)
 
-                # Also exercise key option permutations on overworld composites/final
+                # Also exercise key option permutations on overworld composites/final/terrain/shadow
                 if dim_label == "overworld" and stage == "fsh" and name in ("composite1", "composite2", "final"):
                     variants = [
-                        ("shadows0", source.replace("#define SHADOWS 1", "#define SHADOWS 0")),
-                        ("rtgi0",    source.replace("#define RT_GI 1", "#define RT_GI 0")),
-                        ("rtrefl0",  source.replace("#define RT_REFLECTIONS 1", "#define RT_REFLECTIONS 0")),
-                        ("dbg2",     source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 2")),
-                        ("dbg3",     source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 3")),
-                        ("dbg4",     source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 4")),
-                        ("dbg5",     source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 5")),
-                        ("dbg6",     source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 6")),
+                        ("shadows0",  source.replace("#define SHADOWS 1", "#define SHADOWS 0")),
+                        ("rtgi0",     source.replace("#define RT_GI 1", "#define RT_GI 0")),
+                        ("rtrefl0",   source.replace("#define RT_REFLECTIONS 1", "#define RT_REFLECTIONS 0")),
+                        ("clouds0",   source.replace("#define VOLUMETRIC_CLOUDS 1", "#define VOLUMETRIC_CLOUDS 0")),
+                        ("cshadow0",  source.replace("#define COLORED_SHADOWS 1", "#define COLORED_SHADOWS 0")),
+                        ("caustics0", source.replace("#define WATER_CAUSTICS 1", "#define WATER_CAUSTICS 0")),
+                        ("dbg2",      source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 2")),
+                        ("dbg3",      source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 3")),
+                        ("dbg4",      source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 4")),
+                        ("dbg5",      source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 5")),
+                        ("dbg6",      source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 6")),
                     ]
                     for vname, vsrc in variants:
                         err = compile_source(glslang, workdir, "%s_%s" % (tag, vname), stage, vsrc)
+                        checked += 1
+                        if err:
+                            problems.append(err)
+                elif dim_label == "overworld" and name in ("gbuffers_terrain", "shadow"):
+                    off_macro = ("#define WAVING_FOLIAGE 1", "#define WAVING_FOLIAGE 0") if stage == "vsh" else ("#define LABPBR_SUPPORT 1", "#define LABPBR_SUPPORT 0")
+                    if off_macro[0] in source:
+                        err = compile_source(glslang, workdir, "%s_off" % tag, stage, source.replace(off_macro[0], off_macro[1]))
                         checked += 1
                         if err:
                             problems.append(err)

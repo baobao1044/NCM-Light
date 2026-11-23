@@ -36,7 +36,7 @@ vec2 octEncodeNormal(vec3 n) {
 }
 
 float classifyMaterialTag(float blockId) {
-    if (abs(blockId - 10100.0) < 0.5) return 2.0;
+    if (abs(blockId - 10100.5) < 1.0) return 2.0;
     if (abs(blockId - 10200.0) < 0.5) return 5.0;
     if (abs(blockId - 10300.0) < 0.5) return 3.0;
     if (abs(blockId - 10400.0) < 0.5) return 4.0;
