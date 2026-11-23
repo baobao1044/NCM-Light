@@ -359,9 +359,9 @@ def glsl_checks(shaders_dir, dim_sets, glslang, workdir):
                         if err:
                             problems.append(err)
                 elif dim_label == "overworld" and name in ("gbuffers_terrain", "shadow"):
-                    off_macro = ("#define WAVING_FOLIAGE 1", "#define WAVING_FOLIAGE 0") if stage == "vsh" else ("#define LABPBR_SUPPORT 1", "#define LABPBR_SUPPORT 0")
+                    off_macro = ("#define WAVING_FOLIAGE 1", "#define WAVING_FOLIAGE 0") if stage == "vsh" else ("#define LABPBR_SUPPORT 0", "#define LABPBR_SUPPORT 1")
                     if off_macro[0] in source:
-                        err = compile_source(glslang, workdir, "%s_off" % tag, stage, source.replace(off_macro[0], off_macro[1]))
+                        err = compile_source(glslang, workdir, "%s_alt" % tag, stage, source.replace(off_macro[0], off_macro[1]))
                         checked += 1
                         if err:
                             problems.append(err)

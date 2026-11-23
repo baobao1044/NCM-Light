@@ -108,9 +108,7 @@ void main() {
             finalMat = 5.0;
         } else if (specTex.g >= 0.898) {
             finalMat = 4.0;
-        } else if (specTex.b >= 0.255 && finalMat < 1.5) {
-            finalMat = 7.0;
-        } else if (specTex.r >= 0.52 && finalMat < 5.5) {
+        } else if (specTex.r >= 0.52) {
             finalMat = 3.0;
         }
     }

@@ -3,7 +3,7 @@
     Bit-exact 32-bit RGBA8 packing in colortex3 (50% less VRAM bandwidth than RGBA16F!):
       .xy = Octahedral World Normal mapped to [0, 1]
       .z  = Blocklight [0, 1]
-      .w  = 3-bit Material Class (1..7) * 32 + 5-bit Skylight (0..31) / 255
+      .w  = 3-bit Physical Material Tag (1..7) * 32 + 5-bit Skylight (0..31) / 255
 */
 
 #ifndef NCM_GBUFFERS_COMMON_GLSL

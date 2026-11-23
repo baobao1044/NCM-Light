@@ -96,25 +96,25 @@ void main() {
 
     float reflWork = 0.0;
 
-    /* 2. Coherent Speckle-Free Ray-Traced Reflections (0 taps on matte dry terrain!) */
+    /* 2. Coherent Speckle-Free Ray-Traced Reflections + Prismatic Crystal Dispersion (UHD 620 tuned) */
 #if RT_REFLECTIONS
-    if (!noGeometry && !isHand && RT_STRENGTH > 0.001 && (-viewPos.z) < 64.0) {
+    if (!noGeometry && !isHand && RT_STRENGTH > 0.001 && (-viewPos.z) < 48.0) {
         vec3 worldPos = camRel + cameraPosition;
-        float distFade = 1.0 - smoothstep(46.0, 64.0, -viewPos.z);
+        float distFade = 1.0 - smoothstep(34.0, 48.0, -viewPos.z);
 
         if (packedTrans >= 0.10 && packedTrans < 0.55) {
             float transSky = clamp((packedTrans - 0.15) / 0.35, 0.0, 1.0);
             vec3 geomN = reconstructGeomWorldNormal(texcoord, viewPos);
             vec3 reflN = (geomN.y > 0.85) ? waterWaveNormal(worldPos.xz) : geomN;
             float smoothVal = clamp(0.92 * min(RT_STRENGTH, 1.25), 0.0, 0.98) * distFade;
-            vec4 refl = traceReflectionRT(viewPos, reflN, 0.035, smoothVal, max(transSky, 0.25));
+            vec4 refl = traceReflectionRT(viewPos, reflN, 0.035, smoothVal, max(transSky, 0.25), 0.0022);
             sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.92));
             reflWork = 0.80;
         } else if (packedTrans >= 0.55) {
             float transSky = clamp((packedTrans - 0.60) / 0.35, 0.0, 0.98);
             vec3 geomN = reconstructGeomWorldNormal(texcoord, viewPos);
             float smoothVal = clamp(0.88 * min(RT_STRENGTH, 1.25), 0.0, 0.96) * distFade;
-            vec4 refl = traceReflectionRT(viewPos, geomN, 0.06, smoothVal, max(transSky, 0.25));
+            vec4 refl = traceReflectionRT(viewPos, geomN, 0.06, smoothVal, max(transSky, 0.25), 0.0032);
             sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.86));
             reflWork = 0.75;
         } else {
@@ -131,23 +131,23 @@ void main() {
 
                 if (isMetal) {
                     float smoothM = clamp(0.90 * min(RT_STRENGTH, 1.3), 0.0, 0.96) * distFade;
-                    vec4 refl = traceReflectionRT(viewPos, worldNormal, 0.68, smoothM, skyLight);
+                    vec4 refl = traceReflectionRT(viewPos, worldNormal, 0.68, smoothM, skyLight, 0.0);
                     float luma = max(dot(sceneHDR, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
                     vec3 metalTint = clamp(sceneHDR / luma, vec3(0.35), vec3(1.45));
-                    vec3 tintedRefl = refl.rgb * mix(vec3(1.0), metalTint, 0.65);
+                    vec3 tintedRefl = refl.rgb * mix(vec3(1.0), metalTint, 0.68);
                     sceneHDR = mix(sceneHDR, tintedRefl, clamp(refl.a, 0.0, 0.88));
                     reflWork = 0.85;
                 } else if (isCrystal) {
-                    /* Prismatic Crystal / Gem / Blue-Ice mirror reflection + Thin-Film Spectral Dispersion */
-                    float smoothC = clamp(0.94 * min(RT_STRENGTH, 1.3), 0.0, 0.98) * distFade;
-                    vec4 refl = traceReflectionRT(viewPos, worldNormal, 0.14, smoothC, skyLight);
-                    float vCos = clamp(dot(-dir, worldNormal), 0.0, 1.0);
-                    vec3 irid = thinFilmIridescence(vCos, 2.65);
-                    sceneHDR = mix(sceneHDR, refl.rgb * irid, clamp(refl.a, 0.0, 0.90));
+                    /* Prismatic Cauchy dispersion reflection + Thin-Film Spectral Iridescence */
+                    float smoothC = clamp(0.92 * min(RT_STRENGTH, 1.3), 0.0, 0.97) * distFade;
+                    vec4 refl = traceReflectionRT(viewPos, worldNormal, 0.14, smoothC, skyLight, 0.0052);
+                    float cosV = clamp(dot(-dir, worldNormal), 0.05, 1.0);
+                    vec3 irid = evaluateThinFilmIridescence(cosV, 5.6);
+                    sceneHDR = mix(sceneHDR, refl.rgb * mix(vec3(1.0), irid, 0.45), clamp(refl.a, 0.0, 0.88));
                     reflWork = 0.85;
                 } else if (isGlossy) {
                     float smoothG = clamp(0.84 * min(RT_STRENGTH, 1.3), 0.0, 0.95) * distFade;
-                    vec4 refl = traceReflectionRT(viewPos, worldNormal, 0.065, smoothG, skyLight);
+                    vec4 refl = traceReflectionRT(viewPos, worldNormal, 0.065, smoothG, skyLight, 0.0);
                     sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.85));
                     reflWork = 0.70;
                 } else if (rainStrength > 0.04 && worldNormal.y > 0.80 && skyLight > 0.45) {
@@ -158,9 +158,10 @@ void main() {
                                  * distFade;
                     if (puddle > 0.08) {
                         vec3 wetN = normalize(mix(worldNormal, waterWaveNormal(worldPos.xz * 1.4), 0.60));
-                        vec4 wetRefl = traceReflectionRT(viewPos, wetN, 0.04, 0.65 * puddle * min(RT_STRENGTH, 1.4), skyLight);
-                        vec3 wetIrid = mix(vec3(1.0), thinFilmIridescence(clamp(dot(-dir, wetN), 0.0, 1.0), 1.9), 0.30);
-                        sceneHDR = mix(sceneHDR * (1.0 - 0.18 * puddle), wetRefl.rgb * wetIrid, clamp(wetRefl.a, 0.0, 0.70));
+                        vec4 wetRefl = traceReflectionRT(viewPos, wetN, 0.04, 0.65 * puddle * min(RT_STRENGTH, 1.4), skyLight, 0.0018);
+                        float cosV = clamp(dot(-dir, wetN), 0.05, 1.0);
+                        vec3 sheen = mix(vec3(1.0), evaluateThinFilmIridescence(cosV, 3.8), 0.18 * puddle);
+                        sceneHDR = mix(sceneHDR * (1.0 - 0.18 * puddle), wetRefl.rgb * sheen, clamp(wetRefl.a, 0.0, 0.70));
                         reflWork = 0.55 * puddle;
                     }
                 }
@@ -169,7 +170,7 @@ void main() {
     }
 #endif
 
-    /* 2b. Multiscale Volumetric Clouds, Night Aurora & End Vortex (Sky-Masked 2x2 Gather + Edge Refine) */
+    /* 2b. Multiscale Volumetric Clouds, Night Aurora, End Vortex & 42-deg Physical Rainbow */
     if (noGeometry) {
         vec3 skyScatHDR;
         float skyTrans, borderContrast;
@@ -179,7 +180,7 @@ void main() {
             skyScatHDR = mix(skyScatHDR, edgeRef.rgb, 0.35);
             skyTrans = mix(skyTrans, edgeRef.a, 0.35);
         }
-        sceneHDR = sceneHDR * skyTrans + skyScatHDR + evaluateAtmosphericRainbow(dir, worldShadowLightDir());
+        sceneHDR = sceneHDR * skyTrans + skyScatHDR + evaluateAtmosphericRainbow(dir, worldShadowLightDir()) * skyTrans;
         reflWork = max(reflWork, smoothstep(0.18, 0.45, borderContrast) * 0.55);
     }
 

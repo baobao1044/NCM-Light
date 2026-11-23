@@ -50,15 +50,15 @@ value.COLORED_SHADOWS.1=On (RGB light projection)
 
 option.WATER_CAUSTICS=Water Caustics & Refraction
 value.WATER_CAUSTICS.0=Off
-value.WATER_CAUSTICS.1=On (Chromatic Caustics + Wave Refraction)
+value.WATER_CAUSTICS.1=On (chromatic caustics + refraction)
 
 option.SPECTRAL_DISPERSION=Spectral Dispersion & Iridescence
-value.SPECTRAL_DISPERSION.0=Off (Fast)
-value.SPECTRAL_DISPERSION.1=On (Cauchy RGB + Thin-Film + 42° Rainbow)
+value.SPECTRAL_DISPERSION.0=Off (iGPU max speed)
+value.SPECTRAL_DISPERSION.1=On (Cauchy water, crystals & rainbow)
 
-option.SUBSURFACE_SCATTER=Thick Subsurface Scattering (SSS)
-value.SUBSURFACE_SCATTER.0=Off (Fast)
-value.SUBSURFACE_SCATTER.1=On (Snow, Ice, Slime, Honey & Foliage SSS)
+option.SUBSURFACE_SCATTER=Thick Subsurface Scattering & Glints
+value.SUBSURFACE_SCATTER.0=Off (fast matte)
+value.SUBSURFACE_SCATTER.1=On (snow, ice, slime, honey & foliage)
 
 option.LABPBR_SUPPORT=Auto labPBR 1.3 Textures
 value.LABPBR_SUPPORT.0=Off (IntegratedPBR only)

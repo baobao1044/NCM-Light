@@ -28,7 +28,7 @@
 #define WATER_CAUSTICS 1            // [0 1]
 #define SPECTRAL_DISPERSION 1       // [0 1]
 #define SUBSURFACE_SCATTER 1        // [0 1]
-#define LABPBR_SUPPORT 1            // [0 1]
+#define LABPBR_SUPPORT 0            // [0 1]
 
 const int shadowMapResolution = 1024; // [512 1024 2048 4096]
 const float shadowDistance = 56.0;

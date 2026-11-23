@@ -12,7 +12,7 @@
 
 **Zero Compute Shaders · Zero SSBOs · Zero TAA Smearing · Pure OpenGL 3.3 (`#version 120`) for Iris & OptiFine**
 
-[**⬇ Download `NCM-Light.zip` (v3.1.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**Visual Benchmark**](#visual-benchmark--multiscale-proof) · [**What's New in v3.1 (Optics + Delta-NCM)**](#whats-new-in-v31--physical-optics-spectral-dispersion--uhd-620-fast-path) · [**Why It's Fast**](#where-does-the-speed-come-from-7-core-optimizations) · [**Comparison**](#head-to-head-comparison) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
+[**⬇ Download `NCM-Light.zip` (v3.1.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**Visual Benchmark**](#visual-benchmark--multiscale-proof) · [**What's New in v3.1**](#whats-new-in-v31--physical-optics-spectral-dispersion--uhd-620-boost) · [**Why It's Fast**](#where-does-the-speed-come-from-7-core-optimizations) · [**Comparison**](#head-to-head-comparison) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
 
 </div>
 
@@ -24,16 +24,18 @@
 
 ---
 
-## What's New in v3.1 — Physical Optics, Spectral Dispersion & UHD-620 Fast-Path
+## What's New in v3.1 — Physical Optics, Spectral Dispersion & UHD 620 Boost
 
-`v3.1.0` upgrades the optical material engine to **8 physical classes** (still packed into a single `colortex3.w` byte = **0 extra VRAM, `56.5 MB/frame`**) and eliminates Intel UHD 620 1080p TMU saturation:
+`v3.1.0` eliminates the **Intel UHD 620 1080p compute bottleneck** while upgrading `NCM-Light` to an **8-Class Physical Optics & Spectral Engine** at the exact same **`56.5 MB/frame`** (zero extra VRAM or passes):
 
-- **UHD-620 Adaptive Fast-Path (`-90%` 1080p TMU Fetches)**: Gates `denoiseDeltaNCM` in `composite2` by Delta-NCM's own edge + epistemic-surprise mask — **~85% of flat converged pixels drop from 20 texture fetches to 2**!
-- **8 Physical Material Classes (`3-bit mat + 5-bit skyLight`)**: Adds **Class 6 (Crystals, Gems & Blue Ice)** with Prismatic Thin-Film Iridescence & microfacet glints, and **Class 7 (Snow, Slime, Honey, Sand, Coral)** with shadow-map **Thick-Volume SSS** & snow sparkle.
-- **Zero-Cost Indirect Specular Bounce**: Evaluates GGX specular highlights directly from `Delta-NCM`'s learned dominant light vector (`colortex5.rgb`) onto metals, polished stone, and crystals (`0` extra rays!).
-- **Spectral Dispersion & Beer–Lambert Optics (`SPECTRAL_DISPERSION`, `SUBSURFACE_SCATTER`)**: Adds Cauchy RGB spectral water refraction, chromatic underwater caustics, Beer–Lambert exponential underwater absorption, Kulla-Conty multi-scatter metallic Fresnel, and a physical $42^\circ$ antisolar rainbow during rain/sunshowers.
+- **Intel UHD 620 Compute De-Bottleneck (~45% Less 1080p Sampler/ALU Load)**:
+  - Restores the **Adaptive Edge/Surprise Fast Path** in `composite2.glsl`: `~85%` of flat converged 1080p pixels read `colortex4` + `colortex5` in **2 hardware-bilinear taps instead of 25** (`12.5×` fewer fetches), running the 5-tap A-Trous filter strictly on geometric edges & disoccluded pixels.
+  - Converts `microCreviceAO` to scalar fast-Z (zero `viewFromDepth` matrix unprojects, `< 18m` cutoff), trims reflection distance to `48m`, and sets `LABPBR_SUPPORT=0` on `POTATO`/`BALANCED` (saving 2 full-1080p texture fetches per block in `gbuffers_terrain`; enabled automatically in `ULTRA`).
+- **8-Class Physical Material Bit-Packing (1 Byte `colortex3.w`)**: Re-packs `colortex3.w` into `3-bit matTag (0..7)` + `5-bit skyLight (0..31)`, adding **Class 6: Crystalline Gems & Ice** (diamond, emerald, amethyst, ice, glass) and **Class 7: Thick-Volume SSS & Snow** (snow, slime, honey, coral, sand, mushrooms).
+- **Chromatic Spectral Dispersion & Thin-Film Iridescence (`SPECTRAL_DISPERSION`)**: Cauchy RGB refraction dispersion across water waves, chromatic RGB underwater caustics, prismatic crystal reflections, Airy thin-film iridescence on gems/puddles, and a zero-tap **42° antisolar physical rainbow** during rain.
+- **Thick-Volume Beer–Lambert SSS (`SUBSURFACE_SCATTER`) & Indirect Specular Bounce**: Reuses `shadowtex1` penetration depth (`0` extra shadow fetches) for volumetric SSS on snow/slime/honey, physical Beer–Lambert underwater extinction $\exp(-\sigma_t d)$, Kulla–Conty RGB conductor GGX, procedural micro-sparkle glints, and **zero-cost Indirect Specular Bounce** driven directly by `Delta-NCM` SH L1 (`colortex5.rgb`).
 
-## Delta-NCM v3.0 — Fast-Weight Path Tracing Core
+### Built on v3.0 — Delta-NCM Fast-Weight Path Tracing
 
 `v3.0.0` introduces **Delta-NCM**, bridging **2026 AI Linear Attention / Fast-Weight Test-Time Training** with **Unbiased Monte Carlo Path Tracing** in pure **OpenGL 3.3 Core (`#version 120`)** with **zero extra buffers (`56.5 MB/frame`)**:
 
