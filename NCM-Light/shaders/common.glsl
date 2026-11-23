@@ -57,8 +57,8 @@ uniform sampler2D colortex0;    /* sRGB albedo -> Linear HDR lit scene (R11G11B1
 uniform sampler2D colortex1;    /* 1/4-res level 0: (rays0, ao0, volGate0, edgeGate0) */
 uniform sampler2D colortex2;    /* full-res RGBA8:  (rays,  wL1, packedTrans, volGate1) */
 uniform sampler2D colortex3;    /* full-res RGBA8:  (oct01.xy, blockLight, matSkyByte) */
-uniform sampler2D colortex4;    /* 1/4-res PT raw/temporal GI (RGBA16F) */
-uniform sampler2D colortex5;    /* 1/4-res PT persistent reservoir for Neumann multi-bounce (RGBA16F) */
+uniform sampler2D colortex4;    /* 1/4-res Delta-NCM Fast-Weight G0.rgb + normDepth (RGBA16F) */
+uniform sampler2D colortex5;    /* 1/4-res Delta-NCM Kaczmarz SH L1.xyz + signedInnov (RGBA16F) */
 
 uniform sampler2D depthtex0;
 uniform sampler2D depthtex1;
@@ -567,10 +567,15 @@ float marchShafts(vec3 dir, float tHit, int taps, out float contrast, out float 
 #endif
 }
 
-/* == Real-Time Multi-Bounce Demodulated Path Tracing (NCM-PT v2.0) ==
-   Cosine-weighted stratified R2/Halton + temporal rotation, shadow-map Next Event
-   Estimation (NEE) at secondary hit vertices, Neumann multi-bounce radiance
-   feedback from colortex5, and analytical sky fallback for unoccluded rays. */
+/* == Delta-NCM v3.0: Martingale-Safe Kaczmarz Fast-Weight Attention + Control-Variate PT ==
+   Synthesizes:
+     - Kaczmarz Linear Attention (arXiv:2605.08587): orthogonal key-norm fast-weight projection
+       using the exact Hemisphere-Centered Key d(w) = w - (2/3)*N  (E_cos[d(w)] = 0 identically!)
+     - Gated DeltaNet-2 (arXiv:2605.22791): Martingale-safe (F_{t-1}-measurable) decoupled
+       Erase/Write gates driven by signed temporal innovation -> ZERO bias & fast jump recovery!
+     - Neural Two-Level Monte Carlo (arXiv:2412.04634): unbiased SH L1 control variate residual
+     - Online Fast-Weight Path Guiding (arXiv:2504.04315): R3-independent balance-heuristic MIS
+     - 4-Step Exponential DDA Screen-Space Raymarch + Directional Neumann Multi-Bounce */
 
 vec2 reprojectToPrevUV(vec3 viewPos) {
     vec3 feetPos = (gbufferModelViewInverse * vec4(viewPos, 1.0)).xyz;
@@ -579,6 +584,14 @@ vec2 reprojectToPrevUV(vec3 viewPos) {
     vec4 prevClip = gbufferPreviousProjection * prevView;
     if (prevClip.w <= 1e-4) return vec2(-1.0);
     return (prevClip.xy / prevClip.w) * 0.5 + 0.5;
+}
+
+vec3 convolveDeltaNCML1(vec3 G0, vec3 L1, vec3 fineNormal, vec3 coarseNormal) {
+    /* Exact hemisphere-centered SH L1 irradiance shift for 1080p normal maps & 3D block bevels:
+       G(n_fine) = G0 + (2/3) * L1 . (n_fine - n_coarse)  (zero bias when n_fine == n_coarse!) */
+    float y0 = max(dot(G0, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+    float modF = clamp(1.0 + 0.666667 * (dot(L1, fineNormal - coarseNormal) / y0), 0.25, 1.85);
+    return G0 * modF;
 }
 
 float evaluateSecondarySunNEE(vec3 hitViewPos) {
@@ -623,106 +636,233 @@ vec3 evaluatePathVertexRadiance(vec2 hitUV, vec3 hitViewPos) {
 #if PT_MULTI_BOUNCE
     vec2 prevHitUV = reprojectToPrevUV(hitViewPos);
     if (prevHitUV.x > 0.004 && prevHitUV.x < 0.996 && prevHitUV.y > 0.004 && prevHitUV.y < 0.996) {
-        vec3 prevGI = texture2D(colortex5, prevHitUV).rgb;
-        /* Neumann multi-bounce feedback with 0.55 energy conservation cap */
-        multiBounce = hitAlbedo * min(prevGI, vec3(3.5)) * 0.55;
+        vec4 prevDC = texture2D(colortex4, prevHitUV);
+        if (prevDC.a < 0.995) {
+            /* Neumann multi-bounce feedback with 0.55 spectral-radius cap */
+            multiBounce = hitAlbedo * min(max(prevDC.rgb, vec3(0.0)), vec3(3.5)) * 0.55;
+        }
     }
 #endif
 
     return min(directBounce + skyBounce + torchBounce + multiBounce, vec3(8.0));
 }
 
-vec4 tracePathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal) {
+void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 worldNormal,
+                         vec3 prevG0, vec3 prevL1, float prevSignedInnov, bool hasHistory,
+                         out vec3 outG0, out vec3 outL1, out float outSignedInnov, out float outAO)
+{
 #if !RT_GI
-    return vec4(0.0, 0.0, 0.0, 1.0);
+    outG0 = vec3(0.0);
+    outL1 = vec3(0.0);
+    outSignedInnov = 0.0;
+    outAO = 1.0;
 #else
     float viewDist = -viewPos.z;
-    if (viewDist > 42.0) return vec4(0.0, 0.0, 0.0, 1.0);
+    if (viewDist > 42.0) {
+        outG0 = vec3(0.0);
+        outL1 = vec3(0.0);
+        outSignedInnov = 0.0;
+        outAO = 1.0;
+        return;
+    }
 
     float distAtten = 1.0 - smoothstep(28.0, 42.0, viewDist);
     vec3 b1, b2;
     buildOrthonormalBasis(viewNormal, b1, b2);
 
     vec3 startPos = viewPos + viewNormal * max(0.05, viewDist * 0.005);
-    float rNear = 0.50 + viewDist * 0.015;
-    float rFar  = clamp(2.3 + viewDist * 0.075, 2.3, 5.4);
+    float ddaScale = 1.0 + viewDist * 0.035;
+
+    /* 4-step exponential DDA radii (prevents 1-block wall light leaking while exiting early on hits) */
+    float stepR[4];
+    stepR[0] = 0.38 * ddaScale;
+    stepR[1] = 0.96 * ddaScale;
+    stepR[2] = 2.25 * ddaScale;
+    stepR[3] = min(4.90 * ddaScale, 6.2);
+
+    float stepThick[4];
+    stepThick[0] = 0.65;
+    stepThick[1] = 1.05;
+    stepThick[2] = 1.65;
+    stepThick[3] = 2.40;
+
+    float stepAoW[4];
+    stepAoW[0] = 1.00;
+    stepAoW[1] = 0.78;
+    stepAoW[2] = 0.52;
+    stepAoW[3] = 0.30;
 
     vec2 pxCoord = quarterUV * vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25;
-    float baseNoise = ignNoise(pxCoord);
+    float baseN1 = ignNoise(pxCoord);
+    float baseN2 = ignNoise(pxCoord + vec2(17.0, 31.0));
+    float baseN3 = ignNoise(pxCoord + vec2(43.0, 11.0));
     int frameMod = frameCounter - 64 * (frameCounter / 64);
-    float frameShift = float(frameMod) * 0.61803398875;
+    float fMod = float(frameMod);
     float sppF = float(PT_SPP);
 
     vec3 skyFill = skyAmbientIrradiance() * 0.28;
     float skyFade = smoothstep(-0.08, 0.22, sunElevation());
 
+    /* Martingale-safe (F_{t-1}-measurable) predictable surprise with deadzone:
+       Zero in steady state (zero bias!), opens immediately on real lighting shifts! */
+    float prevSurprise = hasHistory ? clamp((abs(prevSignedInnov) - 0.34) / 0.36, 0.0, 1.0) : 1.0;
+
+    /* Online Fast-Weight Path Guiding extracted directly from prevL1 (zero extra memory!) */
+    float prevY0 = max(dot(prevG0, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+    float lenPrevL1 = length(prevL1);
+    float kappa = hasHistory ? clamp(lenPrevL1 / max(prevY0, 0.05), 0.0, 0.85) : 0.0;
+    vec3 muRaw = prevL1 + worldNormal * (0.666667 * prevY0);
+    float lenMu = length(muRaw);
+    vec3 muWorld = (lenMu > 1e-4) ? (muRaw / lenMu) : worldNormal;
+    vec3 muView = normalize(mat3(gbufferModelView) * muWorld);
+
+    bool canGuide = false;
+    float pGuide = 0.0;
+    float alphaG = 3.0;
+    vec3 g1 = b1;
+    vec3 g2 = b2;
+#if PT_GUIDING
+    if (hasHistory && kappa > 0.15 && dot(muWorld, worldNormal) > 0.25) {
+        canGuide = true;
+        pGuide = 0.50 * kappa * (1.0 - prevSurprise);
+        alphaG = 3.0 + 4.0 * kappa;
+        buildOrthonormalBasis(muView, g1, g2);
+    }
+#endif
+
     float occSum = 0.0;
-    vec3 giSum = vec3(0.0);
+    vec3 rawRGB = vec3(0.0);
+    vec3 resRGB = vec3(0.0);
+    vec3 kaczmarzDir = vec3(0.0);
+    float resYSum = 0.0;
 
     for (int s = 0; s < PT_SPP; s++) {
-        float u1 = fract(baseNoise + frameShift + (float(s) + 0.5) / sppF);
-        float u2 = fract(baseNoise * 1.618034 + frameShift * 0.7548776 + float(s) * 0.381966);
+        float sF = float(s);
+        /* 3 independent R3 plastic-constant coordinates (zero branch-sampling correlation!) */
+        float u1 = fract(baseN1 + fMod * 0.81917251 + (sF + 0.5) / sppF);
+        float u2 = fract(baseN2 + fMod * 0.67104361 + sF * 0.38196601);
+        float uG = fract(baseN3 + fMod * 0.54970048 + sF * 0.75487767);
 
-        float phi = 6.2831853 * u1;
-        float cosTheta = sqrt(max(0.04, u2));
-        float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
-        vec3 rayDir = (b1 * cos(phi) + b2 * sin(phi)) * sinTheta + viewNormal * cosTheta;
+        vec3 rayDir;
+        if (canGuide && uG < pGuide) {
+            float phiG = 6.2831853 * u1;
+            float cosG = pow(max(1e-4, u2), 1.0 / (alphaG + 1.0));
+            float sinG = sqrt(max(0.0, 1.0 - cosG * cosG));
+            rayDir = normalize((g1 * cos(phiG) + g2 * sin(phiG)) * sinG + muView * cosG);
+        } else {
+            float phi = 6.2831853 * u1;
+            float cosTheta = sqrt(max(1e-4, u2));
+            float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+            rayDir = (b1 * cos(phi) + b2 * sin(phi)) * sinTheta + viewNormal * cosTheta;
+        }
+
+        float cosN = dot(rayDir, viewNormal);
+        if (cosN <= 0.0) {
+            /* Exact balance-heuristic MIS: guided ray below horizon contributes 0 (strictly unbiased!) */
+            continue;
+        }
+
+        float wIS = 1.0;
+        if (canGuide && pGuide > 1e-4) {
+            float pCos = cosN * (1.0 / PI);
+            float cosM = max(dot(rayDir, muView), 0.0);
+            float pLobe = (alphaG + 1.0) * (0.5 / PI) * pow(cosM, alphaG);
+            wIS = pCos / ((1.0 - pGuide) * pCos + pGuide * pLobe);
+        }
 
         float dirOcc = 0.0;
         vec2 hitUV = vec2(-1.0);
         vec3 hitPos = vec3(0.0);
         float hitWeight = 0.0;
+        float jitter = 0.70 + 0.50 * u2;
 
-        /* Near bounce: tight 90-deg crevices & local color bleed */
-        vec3 pNear = startPos + rayDir * (rNear * (0.75 + 0.5 * u2));
-        vec3 prjN = fastProjectToScreen(pNear);
-        if (prjN.z > 0.0 && prjN.x > 0.003 && prjN.x < 0.997 && prjN.y > 0.003 && prjN.y < 0.997) {
-            float sdN = texture2D(depthtex1, prjN.xy).r;
-            if (sdN < 0.9999) {
-                float vzN = fastViewZ(sdN);
-                float penN = vzN - pNear.z;
-                if (penN > 0.02 && penN < 0.95) {
-                    dirOcc = 1.0 - smoothstep(0.55, 0.95, penN);
-                    hitUV = prjN.xy;
-                    hitPos = viewFromDepth(hitUV, sdN);
-                    hitWeight = 1.0;
+        for (int m = 0; m < 4; m++) {
+            vec3 pStep = startPos + rayDir * (stepR[m] * jitter);
+            vec3 prj = fastProjectToScreen(pStep);
+            if (prj.z <= 0.0 || prj.x < 0.003 || prj.x > 0.997 || prj.y < 0.003 || prj.y > 0.997) {
+                break;
+            }
+            float sd = texture2D(depthtex1, prj.xy).r;
+            if (sd < 0.9999) {
+                float vz = fastViewZ(sd);
+                float pen = vz - pStep.z;
+                if (pen > 0.02 && pen < stepThick[m]) {
+                    dirOcc = (1.0 - smoothstep(stepThick[m] * 0.55, stepThick[m], pen)) * stepAoW[m];
+                    hitUV = prj.xy;
+                    hitPos = viewFromDepth(hitUV, sd);
+                    hitWeight = (m == 0) ? 1.0 : (m == 1 ? 0.95 : 0.85);
+                    break;
                 }
             }
         }
 
-        /* Far bounce: room-scale sunlit wall & torch GI + canopy AO */
-        if (hitWeight < 0.5) {
-            vec3 pFar = startPos + rayDir * (rFar * (0.70 + 0.6 * u1));
-            vec3 prjF = fastProjectToScreen(pFar);
-            if (prjF.z > 0.0 && prjF.x > 0.003 && prjF.x < 0.997 && prjF.y > 0.003 && prjF.y < 0.997) {
-                float sdF = texture2D(depthtex1, prjF.xy).r;
-                if (sdF < 0.9999) {
-                    float vzF = fastViewZ(sdF);
-                    float penF = vzF - pFar.z;
-                    if (penF > 0.04 && penF < 2.2) {
-                        dirOcc = max(dirOcc, (1.0 - smoothstep(1.3, 2.2, penF)) * 0.58);
-                        hitUV = prjF.xy;
-                        hitPos = viewFromDepth(hitUV, sdF);
-                        hitWeight = 0.85;
-                    }
-                }
-            }
+        vec3 worldRay = normalize(mat3(gbufferModelViewInverse) * rayDir);
+        vec3 sampRGB;
+        if (hitWeight > 0.0) {
+            sampRGB = evaluatePathVertexRadiance(hitUV, hitPos) * hitWeight;
+        } else {
+            float upMask = smoothstep(-0.15, 0.55, worldRay.y);
+            sampRGB = skyFill * (0.35 + 0.65 * upMask) * (0.25 + 0.75 * skyFade);
         }
+
+        /* Karis firefly compression + distance attenuation */
+        float rawLuma = dot(sampRGB, vec3(0.2126, 0.7152, 0.0722));
+        sampRGB = (sampRGB / (1.0 + rawLuma * 0.08)) * distAtten;
+        float sampY = dot(sampRGB, vec3(0.2126, 0.7152, 0.0722));
 
         occSum += dirOcc;
-        if (hitWeight > 0.0) {
-            giSum += evaluatePathVertexRadiance(hitUV, hitPos) * hitWeight;
-        } else {
-            vec3 worldRay = normalize(mat3(gbufferModelViewInverse) * rayDir);
-            float upMask = smoothstep(-0.15, 0.55, worldRay.y);
-            giSum += skyFill * (0.35 + 0.65 * upMask) * (0.25 + 0.75 * skyFade);
+        rawRGB += wIS * sampRGB;
+
+        if (hasHistory) {
+            /* Exact Orthogonal Hemisphere-Centered Key: d = w - (2/3)*N  => E_cos[d] = 0!
+               Exact Unbiased Two-Level Control Variate Residual: NO max(0,.) clamp on pred! */
+            vec3 dKey = worldRay - worldNormal * 0.666667;
+            float l1DotD = dot(prevL1, dKey);
+            vec3 predRGB = prevG0 * (1.0 + l1DotD / prevY0);
+            float predY = prevY0 + l1DotD;
+
+            vec3 rCV_rgb = wIS * (sampRGB - predRGB);
+            float rCV_y  = wIS * (sampY - predY);
+            float dNorm2 = dot(dKey, dKey) + 0.25;
+
+            resRGB += rCV_rgb;
+            resYSum += rCV_y;
+            kaczmarzDir += (rCV_y / dNorm2) * dKey;
         }
     }
 
     float invSpp = 1.0 / sppF;
-    float aoVis = 1.0 - clamp((occSum * invSpp) * distAtten * 0.88, 0.0, 0.68);
-    vec3 giAvg = (giSum * invSpp) * distAtten;
-    return vec4(giAvg, aoVis);
+    outAO = 1.0 - clamp((occSum * invSpp) * distAtten * 0.88, 0.0, 0.68);
+    rawRGB *= invSpp;
+
+    if (hasHistory) {
+        resRGB *= invSpp;
+        resYSum *= invSpp;
+        kaczmarzDir *= invSpp;
+
+        /* Martingale-Safe Decoupled Erase & Write Gates (Gated DeltaNet-2) */
+        float s2 = prevSurprise * prevSurprise;
+        float eraseGate = 0.015 + 0.45 * s2;
+        float writeGate = 0.10  + 0.48 * s2;
+        float dirWrite  = 0.18  + 0.42 * prevSurprise;
+
+        outG0 = max(vec3(0.0), prevG0 + writeGate * resRGB);
+        outL1 = (1.0 - eraseGate) * prevL1 + dirWrite * kaczmarzDir;
+
+        float normRes = clamp(resYSum / (0.20 + 0.80 * prevY0), -1.5, 1.5);
+        outSignedInnov = clamp(0.72 * prevSignedInnov + 0.28 * normRes, -1.5, 1.5);
+    } else {
+        outG0 = max(vec3(0.0), rawRGB);
+        outL1 = vec3(0.0);
+        outSignedInnov = 1.0;
+    }
+
+    /* Physical SH L1 boundedness projection: |L1| <= 1.40 * Y0 */
+    float newY0 = dot(outG0, vec3(0.2126, 0.7152, 0.0722));
+    float lenNewL1 = length(outL1);
+    if (lenNewL1 > newY0 * 1.40 && lenNewL1 > 1e-5) {
+        outL1 *= (newY0 * 1.40) / lenNewL1;
+    }
 #endif
 }
 

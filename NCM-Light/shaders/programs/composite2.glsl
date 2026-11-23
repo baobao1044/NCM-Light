@@ -24,11 +24,14 @@ void main() {
 
 varying vec2 texcoord;
 
-void denoisePathTracedGI(vec2 uv, float centerZ, vec3 centerWorldN,
-                         out vec3 outGI, out float outAO)
+void denoiseDeltaNCM(vec2 uv, float centerZ, vec3 centerWorldN,
+                     out vec3 outGI, out float outAO)
 {
     vec2 coarseRes = max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
-    vec2 stepUV = 2.0 / coarseRes;
+    float centerSurprise = clamp((abs(texture2D(colortex5, uv).a) - 0.30) / 0.45, 0.0, 1.0);
+    /* Surprise-guided A-Trous stride: razor-sharp 1-texel when converged, 2.5-texel on disocclusion */
+    float stride = mix(1.0, 2.5, centerSurprise);
+    vec2 stepUV = stride / coarseRes;
 
     vec2 offs[5];
     offs[0] = vec2( 0.0,  0.0);
@@ -38,13 +41,15 @@ void denoisePathTracedGI(vec2 uv, float centerZ, vec3 centerWorldN,
     offs[4] = vec2( 0.0, -stepUV.y);
 
     float kW[5];
-    kW[0] = 0.36;
-    kW[1] = 0.16;
-    kW[2] = 0.16;
-    kW[3] = 0.16;
-    kW[4] = 0.16;
+    kW[0] = mix(0.44, 0.28, centerSurprise);
+    kW[1] = (1.0 - kW[0]) * 0.25;
+    kW[2] = kW[1];
+    kW[3] = kW[1];
+    kW[4] = kW[1];
 
-    vec3 sumGI = vec3(0.0);
+    vec3 sumG0 = vec3(0.0);
+    vec3 sumL1 = vec3(0.0);
+    vec3 sumN  = vec3(0.0);
     float sumAO = 0.0;
     float wSum = 0.0;
 
@@ -61,18 +66,28 @@ void denoisePathTracedGI(vec2 uv, float centerZ, vec3 centerWorldN,
 
         float w = kW[i] * (0.02 + 0.98 * nW * nW) / (1.0 + dz * dz * 6.0);
         sumAO += texture2D(colortex1, cuv).y * w;
-        sumGI += texture2D(colortex5, cuv).rgb * w;
+        sumG0 += max(texture2D(colortex4, cuv).rgb, vec3(0.0)) * w;
+        sumL1 += texture2D(colortex5, cuv).rgb * w;
+        sumN  += cNorm * w;
         wSum += w;
     }
 
+    vec3 avgG0, avgL1, avgCoarseN;
     if (wSum > 1e-4) {
         float invW = 1.0 / wSum;
         outAO = clamp(sumAO * invW, 0.25, 1.0);
-        outGI = max(sumGI * invW, vec3(0.0));
+        avgG0 = max(sumG0 * invW, vec3(0.0));
+        avgL1 = sumL1 * invW;
+        avgCoarseN = normalize(sumN + vec3(0.0, 1e-5, 0.0));
     } else {
         outAO = clamp(texture2D(colortex1, uv).y, 0.25, 1.0);
-        outGI = texture2D(colortex5, uv).rgb;
+        avgG0 = max(texture2D(colortex4, uv).rgb, vec3(0.0));
+        avgL1 = texture2D(colortex5, uv).rgb;
+        avgCoarseN = centerWorldN;
     }
+
+    /* Evaluate exact hemisphere-centered SH L1 directional shift for 1080p normal maps & block bevels */
+    outGI = convolveDeltaNCML1(avgG0, avgL1, centerWorldN, avgCoarseN);
 }
 
 void main() {
@@ -115,11 +130,11 @@ void main() {
 #if RT_GI
     if (!noGeometry && !isHand && !isTranslucent && hasSurf && RT_STRENGTH > 0.001 && (-viewPos.z) < 42.0) {
         if (DEBUG_LEVEL != 1) {
-            denoisePathTracedGI(texcoord, viewPos.z, worldNormal, estGI, estAO);
+            denoiseDeltaNCM(texcoord, viewPos.z, worldNormal, estGI, estAO);
             edgeWork = coarse1.w;
         } else {
             estAO = clamp(coarse1.y, 0.25, 1.0);
-            estGI = texture2D(colortex5, texcoord).rgb;
+            estGI = max(texture2D(colortex4, texcoord).rgb, vec3(0.0));
         }
     }
 #endif

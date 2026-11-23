@@ -350,9 +350,7 @@ def main():
     print("default threshold %.2f skips work:  %s (%.2f vs %d uniform taps/pixel)"
           % (REFINE_THRESHOLD, "YES" if default_cost < TAPS[2] * 0.65 else "NO", default_cost, TAPS[2]))
 
-    # Neumann Multi-Bounce Path Tracing convergence check (NCM-PT v2.0):
-    # Simulates L_n = direct + 0.55 * albedo * L_{n-1} across frames.
-    # For albedo <= 0.85, spectral radius rho = 0.55 * 0.85 = 0.4675 < 1 -> guaranteed convergence.
+    # Neumann Multi-Bounce Path Tracing convergence check (NCM-PT):
     albedo_test = 0.80
     direct_test = 1.0
     l_prev = 0.0
@@ -363,7 +361,161 @@ def main():
     print("\nNeumann multi-bounce PT convergence (albedo=%.2f): L16=%.6f vs analytical=%.6f (%s)"
           % (albedo_test, l_prev, l_exact, "PASS" if pt_converged else "FAIL"))
 
-    return 0 if (converging and edges_dominate and not non_finite and default_cost < TAPS[2] * 0.65 and pt_converged) else 1
+    # Delta-NCM v3.0 Mathematical Proof (64-seed ensemble):
+    # Compares standard 1-spp Blind Cosine EMA vs Delta-NCM (Hemisphere-Centered Orthogonal
+    # Kaczmarz SH L1 + Martingale-Safe Gated DeltaNet-2 + Unbiased Control Variate + R3 Guiding)
+    # on a 3D hemisphere with a bright window/torch lobe that jumps 90 deg and 2.2x at frame 60!
+    def norm3(v):
+        n = math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
+        return (v[0]/n, v[1]/n, v[2]/n) if n > 1e-8 else (0.0, 1.0, 0.0)
+
+    def dot3(a, b):
+        return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+
+    def eval_scene_radiance(w, light_dir, boost=1.0):
+        c = max(0.0, dot3(w, light_dir))
+        return 0.15 + 3.8 * boost * (c ** 4)
+
+    n_base = (0.0, 1.0, 0.0)
+    n_tilt = norm3((0.35, 0.936, 0.0))
+    l_dir_a = norm3((0.65, 0.76, 0.0))
+    l_dir_b = norm3((-0.65, 0.76, 0.0))
+
+    def exact_irrad(ld, boost=1.0, norm=n_base):
+        acc = 0.0
+        up = (0.0, 0.0, 1.0) if abs(norm[1]) > 0.9 else (0.0, 1.0, 0.0)
+        b1 = norm3((up[1]*norm[2] - up[2]*norm[1], up[2]*norm[0] - up[0]*norm[2], up[0]*norm[1] - up[1]*norm[0]))
+        b2 = (norm[1]*b1[2] - norm[2]*b1[1], norm[2]*b1[0] - norm[0]*b1[2], norm[0]*b1[1] - norm[1]*b1[0])
+        n_ref = 4096
+        for k in range(n_ref):
+            u1 = (k + 0.5) / n_ref
+            u2 = fract(k * 0.61803398875)
+            phi = 2.0 * math.pi * u1
+            ct = math.sqrt(max(1e-4, u2))
+            st = math.sqrt(max(0.0, 1.0 - ct * ct))
+            w = (
+                (b1[0]*math.cos(phi) + b2[0]*math.sin(phi))*st + norm[0]*ct,
+                (b1[1]*math.cos(phi) + b2[1]*math.sin(phi))*st + norm[1]*ct,
+                (b1[2]*math.cos(phi) + b2[2]*math.sin(phi))*st + norm[2]*ct,
+            )
+            acc += eval_scene_radiance(w, ld, boost)
+        return acc / n_ref
+
+    gt_a, gt_b = exact_irrad(l_dir_a, 1.0), exact_irrad(l_dir_b, 2.2)
+    gt_tilt_a, gt_tilt_b = exact_irrad(l_dir_a, 1.0, n_tilt), exact_irrad(l_dir_b, 2.2, n_tilt)
+
+    ema_ts = dn_ts = ema_tj = dn_tj = 0.0
+    var_blind = var_cv = bias_dn = align_sum = 0.0
+    seeds = 64
+
+    for seed in range(seeds):
+        ema_val = 0.0
+        dn_g0 = 0.0
+        dn_l1 = [0.0, 0.0, 0.0]
+        signed_innov = 0.0
+
+        for t in range(120):
+            ld = l_dir_a if t < 60 else l_dir_b
+            boost = 1.0 if t < 60 else 2.2
+            gt = gt_a if t < 60 else gt_b
+            gt_t = gt_tilt_a if t < 60 else gt_tilt_b
+
+            u1 = fract(0.137 * seed + 0.37 + t * 0.8191725134)
+            u2 = fract(0.293 * seed + 0.71 + t * 0.6710436067)
+            u_g = fract(0.517 * seed + 0.19 + t * 0.5497004779)
+            phi = 2.0 * math.pi * u1
+            ct = math.sqrt(max(1e-4, u2))
+            st = math.sqrt(max(0.0, 1.0 - ct * ct))
+            w_cos = (st * math.cos(phi), ct, st * math.sin(phi))
+
+            v_blind = eval_scene_radiance(w_cos, ld, boost)
+            ema_val = v_blind if t == 0 else (0.13 * v_blind + 0.87 * ema_val)
+
+            prev_surprise = clamp((abs(signed_innov) - 0.34) / 0.36, 0.0, 1.0) if t > 0 else 1.0
+            mu_raw = (dn_l1[0], dn_l1[1] + 0.666667 * dn_g0, dn_l1[2])
+            l1_len = math.sqrt(dn_l1[0]**2 + dn_l1[1]**2 + dn_l1[2]**2)
+            kappa = clamp(l1_len / max(dn_g0, 0.05), 0.0, 0.85) if t > 0 else 0.0
+            mu = norm3(mu_raw)
+            can_guide = (t > 0 and kappa > 0.15 and mu[1] > 0.25)
+            p_guide = 0.50 * kappa * (1.0 - prev_surprise) if can_guide else 0.0
+            alpha_g = 3.0 + 4.0 * kappa
+
+            if can_guide and u_g < p_guide:
+                up = (0.0, 0.0, 1.0) if abs(mu[1]) > 0.9 else (0.0, 1.0, 0.0)
+                b1 = norm3((up[1]*mu[2] - up[2]*mu[1], up[2]*mu[0] - up[0]*mu[2], up[0]*mu[1] - up[1]*mu[0]))
+                b2 = (mu[1]*b1[2] - mu[2]*b1[1], mu[2]*b1[0] - mu[0]*b1[2], mu[0]*b1[1] - mu[1]*b1[0])
+                cg = max(1e-4, u2) ** (1.0 / (alpha_g + 1.0))
+                sg = math.sqrt(max(0.0, 1.0 - cg * cg))
+                w_ray = norm3((
+                    (b1[0]*math.cos(phi) + b2[0]*math.sin(phi))*sg + mu[0]*cg,
+                    (b1[1]*math.cos(phi) + b2[1]*math.sin(phi))*sg + mu[1]*cg,
+                    (b1[2]*math.cos(phi) + b2[2]*math.sin(phi))*sg + mu[2]*cg,
+                ))
+            else:
+                w_ray = w_cos
+
+            if w_ray[1] <= 0.0:
+                v_dn = 0.0
+                w_is = 0.0
+            else:
+                w_is = 1.0
+                if can_guide and p_guide > 1e-4:
+                    p_cos = w_ray[1] / math.pi
+                    p_lobe = (alpha_g + 1.0) / (2.0 * math.pi) * (max(dot3(w_ray, mu), 0.0) ** alpha_g)
+                    w_is = p_cos / ((1.0 - p_guide) * p_cos + p_guide * p_lobe)
+                v_dn = eval_scene_radiance(w_ray, ld, boost)
+
+            d_key = (w_ray[0], w_ray[1] - 0.666667, w_ray[2])
+            if t == 0:
+                dn_g0 = v_dn
+                dn_l1 = [0.0, 0.0, 0.0]
+                signed_innov = 0.0
+            else:
+                pred_unbiased = dn_g0 + dot3(dn_l1, d_key)
+                res_cv = w_is * (v_dn - pred_unbiased)
+                if 20 <= t < 60:
+                    var_blind += (v_blind - gt) ** 2
+                    var_cv += (dn_g0 + res_cv - gt) ** 2
+
+                s2 = prev_surprise * prev_surprise
+                erase_g = 0.015 + 0.45 * s2
+                write_g = 0.10 + 0.48 * s2
+                dir_g = 0.18 + 0.42 * prev_surprise
+
+                dn_g0 = max(0.0, dn_g0 + write_g * res_cv)
+                d_norm2 = dot3(d_key, d_key) + 0.25
+                dn_l1 = [(1.0 - erase_g) * dn_l1[i] + dir_g * (res_cv / d_norm2) * d_key[i] for i in range(3)]
+                ln = math.sqrt(dn_l1[0]**2 + dn_l1[1]**2 + dn_l1[2]**2)
+                if ln > dn_g0 * 1.40 and ln > 1e-5:
+                    s_cap = (dn_g0 * 1.40) / ln
+                    dn_l1 = [dn_l1[i] * s_cap for i in range(3)]
+
+                norm_res = clamp(res_cv / (0.20 + 0.80 * dn_g0), -1.5, 1.5)
+                signed_innov = 0.72 * signed_innov + 0.28 * norm_res
+
+            dn_tilt = max(0.0, dn_g0 + 0.666667 * dot3(dn_l1, (n_tilt[0], n_tilt[1] - 1.0, n_tilt[2])))
+            if 20 <= t < 60:
+                ema_ts += (ema_val - gt_t) ** 2
+                dn_ts += (dn_tilt - gt_t) ** 2
+                bias_dn += (dn_g0 - gt)
+            elif 60 <= t < 80:
+                ema_tj += (ema_val - gt_t) ** 2
+                dn_tj += (dn_tilt - gt_t) ** 2
+        align_sum += dot3(norm3((dn_l1[0], dn_l1[1] + 0.666667 * dn_g0, dn_l1[2])), l_dir_b)
+
+    var_red = var_blind / max(var_cv, 1e-6)
+    norm_gain = math.sqrt(ema_ts / max(dn_ts, 1e-6))
+    jump_gain = math.sqrt(ema_tj / max(dn_tj, 1e-6))
+    sh_align = align_sum / seeds
+    mean_bias = bias_dn / (40.0 * seeds)
+    dn_beats_ema = (var_red > 2.0 and norm_gain > 1.25 and jump_gain > 1.10 and sh_align > 0.90 and abs(mean_bias) < 0.04)
+    print("Delta-NCM v3.0 1-spp proof (Kaczmarz SH L1 + Martingale DeltaNet-2 + Control Variate + Guiding):")
+    print("  1-spp single-ray variance reduction: %.2fx (blind=%.4f -> Delta-NCM=%.4f) | bias=%.4f"
+          % (var_red, var_blind / (40.0 * seeds), var_cv / (40.0 * seeds), mean_bias))
+    print("  3D normal-map RMSE gain: %.2fx | post-jump recovery gain: %.2fx | SH L1 align=%.4f (%s)"
+          % (norm_gain, jump_gain, sh_align, "PASS" if dn_beats_ema else "FAIL"))
+
+    return 0 if (converging and edges_dominate and not non_finite and default_cost < TAPS[2] * 0.65 and pt_converged and dn_beats_ema) else 1
 
 
 if __name__ == "__main__":

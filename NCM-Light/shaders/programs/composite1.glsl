@@ -89,44 +89,52 @@ void main() {
     float rayPred = max(bandPred, relativeResidual(subRes * skyWeights.y, rays0));
     float volGate0 = clamp(max(rayPred, edges.x * 0.55 * step(0.002, rays0)), 0.0, 1.0);
 
-    vec3 gi0 = vec3(0.0);
-    vec3 reservoirGI = vec3(0.0);
+    vec3 outG0 = vec3(0.0);
+    vec3 outL1 = vec3(0.0);
+    float outSignedInnov = 0.0;
     float normDepth = 1.0;
     float ao0 = 1.0;
     float edgeGate0 = 0.0;
 
     if (noGeometry) {
         vec4 vSky = evaluateVolumetricSkyL0(dir);
-        gi0 = vSky.rgb;
+        outG0 = vSky.rgb;
         ao0 = vSky.a;
+        normDepth = 1.0;
     } else {
-        normDepth = clamp((-viewPos.z) / 64.0, 0.0, 1.0);
+        float currDist = -viewPos.z;
+        normDepth = clamp(currDist / 64.0, 0.0, 0.99);
 #if RT_GI
-        if (hasSurf && RT_STRENGTH > 0.001 && (-viewPos.z) < 42.0) {
+        if (hasSurf && RT_STRENGTH > 0.001 && currDist < 42.0) {
             vec3 viewN = normalize(mat3(gbufferModelView) * worldN);
-            vec4 rt0 = tracePathGI(texcoord, viewPos, viewN);
-            float currLuma = dot(rt0.rgb, vec3(0.2126, 0.7152, 0.0722));
-            gi0 = rt0.rgb / (1.0 + currLuma * 0.08);
-            ao0 = rt0.a;
-            edgeGate0 = clamp(max(edges.x * 0.80, edges.y * 0.90), 0.0, 1.0);
+            vec3 prevG0 = vec3(0.0);
+            vec3 prevL1 = vec3(0.0);
+            float prevSignedInnov = 0.0;
+            bool hasHistory = false;
 
-            reservoirGI = gi0;
             vec2 prevUV = reprojectToPrevUV(viewPos);
             if (prevUV.x > 0.004 && prevUV.x < 0.996 && prevUV.y > 0.004 && prevUV.y < 0.996) {
-                vec4 hist = texture2D(colortex5, prevUV);
-                float histDist = hist.a * 64.0;
-                float currDist = -viewPos.z;
-                if (abs(histDist - currDist) < max(0.35, currDist * 0.08)) {
-                    reservoirGI = mix(gi0, max(hist.rgb, vec3(0.0)), 0.87);
+                vec4 histDC = texture2D(colortex4, prevUV);
+                float histDist = histDC.a * 64.0;
+                if (histDC.a < 0.995 && abs(histDist - currDist) < max(0.35, currDist * 0.08)) {
+                    prevG0 = max(histDC.rgb, vec3(0.0));
+                    vec4 histSH = texture2D(colortex5, prevUV);
+                    prevL1 = histSH.rgb;
+                    prevSignedInnov = histSH.a;
+                    hasHistory = true;
                 }
             }
+
+            traceDeltaNCMPathGI(texcoord, viewPos, viewN, worldN, prevG0, prevL1, prevSignedInnov, hasHistory,
+                                outG0, outL1, outSignedInnov, ao0);
+            edgeGate0 = clamp(max(edges.x * 0.80, edges.y * 0.90), 0.0, 1.0);
         }
 #endif
     }
 
     gl_FragData[0] = vec4(rays0, ao0, volGate0, edgeGate0);
-    gl_FragData[1] = vec4(gi0, 1.0);
-    gl_FragData[2] = vec4(reservoirGI, normDepth);
+    gl_FragData[1] = vec4(outG0, normDepth);
+    gl_FragData[2] = vec4(outL1, outSignedInnov);
 }
 
 #endif

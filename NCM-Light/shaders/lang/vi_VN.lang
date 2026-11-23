@@ -15,18 +15,22 @@ option.SHADOWS=Bóng đổ
 value.SHADOWS.0=Tắt (tia màn hình nhẹ)
 value.SHADOWS.1=Bật (shadow map nén 4.4x)
 
-option.RT_GI=Path Tracing GI & AO (NCM-PT)
+option.RT_GI=Delta-NCM Path Tracing (GI & AO)
 value.RT_GI.0=Tắt
-value.RT_GI.1=Bật (Path Tracing Đa Nảy 1/4 res)
+value.RT_GI.1=Bật (Kaczmarz Fast-Weight SH L1 PT)
 
 option.PT_SPP=Số Tia Path Tracing (SPP)
-value.PT_SPP.1=1 spp (Siêu nhẹ / iGPU)
-value.PT_SPP.2=2 spp (Cân bằng / Khuyên dùng)
-value.PT_SPP.4=4 spp (Siêu mịn / Ultra)
+value.PT_SPP.1=1 spp (Khuyên dùng Delta-NCM / iGPU)
+value.PT_SPP.2=2 spp (Siêu nét / Ultra)
+value.PT_SPP.4=4 spp (Tham chiếu / Cực đại)
 
 option.PT_MULTI_BOUNCE=Ánh Sáng Đa Nảy (Neumann Feedback)
 value.PT_MULTI_BOUNCE.0=Tắt (1 lần nảy)
 value.PT_MULTI_BOUNCE.1=Bật (Đa nảy vô hạn qua Reservoir)
+
+option.PT_GUIDING=Tự Lái Tia Thông Minh (Path Guiding)
+value.PT_GUIDING.0=Tắt (Chỉ bán cầu Cosine)
+value.PT_GUIDING.1=Bật (SH L1 MIS hướng nguồn sáng)
 
 option.RT_REFLECTIONS=Phản chiếu Ray Tracing (NCM)
 value.RT_REFLECTIONS.0=Tắt
