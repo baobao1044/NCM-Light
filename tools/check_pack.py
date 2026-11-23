@@ -345,6 +345,8 @@ def glsl_checks(shaders_dir, dim_sets, glslang, workdir):
                         ("clouds0",   source.replace("#define VOLUMETRIC_CLOUDS 1", "#define VOLUMETRIC_CLOUDS 0")),
                         ("cshadow0",  source.replace("#define COLORED_SHADOWS 1", "#define COLORED_SHADOWS 0")),
                         ("caustics0", source.replace("#define WATER_CAUSTICS 1", "#define WATER_CAUSTICS 0")),
+                        ("disp0",     source.replace("#define SPECTRAL_DISPERSION 1", "#define SPECTRAL_DISPERSION 0")),
+                        ("sss0",      source.replace("#define SUBSURFACE_SCATTER 1", "#define SUBSURFACE_SCATTER 0")),
                         ("dbg2",      source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 2")),
                         ("dbg3",      source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 3")),
                         ("dbg4",      source.replace("#define DEBUG_LEVEL 0", "#define DEBUG_LEVEL 4")),

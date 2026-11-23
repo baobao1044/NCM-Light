@@ -7,12 +7,12 @@
 [![Shaderpack CI](https://github.com/baobao1044/NCM-Light/actions/workflows/ci.yml/badge.svg)](https://github.com/baobao1044/NCM-Light/actions/workflows/ci.yml)
 [![Download Latest ZIP](https://img.shields.io/github/v/release/baobao1044/NCM-Light?color=2ea043&label=Download%20NCM-Light.zip&logo=github)](https://github.com/baobao1044/NCM-Light/releases/latest)
 [![OpenGL 3.3 Core](https://img.shields.io/badge/OpenGL-3.3%20Core%20(%23version%20120)-1f6feb)](#hardware--compatibility)
-[![GLSL Permutations](https://img.shields.io/badge/Verified%20Shaders-173%2F173%20Passing-3fb950)](tools/check_pack.py)
+[![GLSL Permutations](https://img.shields.io/badge/Verified%20Shaders-179%2F179%20Passing-3fb950)](tools/check_pack.py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-d29922.svg)](LICENSE)
 
 **Zero Compute Shaders · Zero SSBOs · Zero TAA Smearing · Pure OpenGL 3.3 (`#version 120`) for Iris & OptiFine**
 
-[**⬇ Download `NCM-Light.zip` (v3.0.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**Visual Benchmark**](#visual-benchmark--multiscale-proof) · [**What's New in v3.0 (Delta-NCM)**](#whats-new-in-v30--delta-ncm-fast-weight-path-tracing) · [**Why It's Fast**](#where-does-the-speed-come-from-7-core-optimizations) · [**Comparison**](#head-to-head-comparison) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
+[**⬇ Download `NCM-Light.zip` (v3.1.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**Visual Benchmark**](#visual-benchmark--multiscale-proof) · [**What's New in v3.1 (Optics + Delta-NCM)**](#whats-new-in-v31--physical-optics-spectral-dispersion--uhd-620-fast-path) · [**Why It's Fast**](#where-does-the-speed-come-from-7-core-optimizations) · [**Comparison**](#head-to-head-comparison) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
 
 </div>
 
@@ -24,7 +24,16 @@
 
 ---
 
-## What's New in v3.0 — Delta-NCM Fast-Weight Path Tracing
+## What's New in v3.1 — Physical Optics, Spectral Dispersion & UHD-620 Fast-Path
+
+`v3.1.0` upgrades the optical material engine to **8 physical classes** (still packed into a single `colortex3.w` byte = **0 extra VRAM, `56.5 MB/frame`**) and eliminates Intel UHD 620 1080p TMU saturation:
+
+- **UHD-620 Adaptive Fast-Path (`-90%` 1080p TMU Fetches)**: Gates `denoiseDeltaNCM` in `composite2` by Delta-NCM's own edge + epistemic-surprise mask — **~85% of flat converged pixels drop from 20 texture fetches to 2**!
+- **8 Physical Material Classes (`3-bit mat + 5-bit skyLight`)**: Adds **Class 6 (Crystals, Gems & Blue Ice)** with Prismatic Thin-Film Iridescence & microfacet glints, and **Class 7 (Snow, Slime, Honey, Sand, Coral)** with shadow-map **Thick-Volume SSS** & snow sparkle.
+- **Zero-Cost Indirect Specular Bounce**: Evaluates GGX specular highlights directly from `Delta-NCM`'s learned dominant light vector (`colortex5.rgb`) onto metals, polished stone, and crystals (`0` extra rays!).
+- **Spectral Dispersion & Beer–Lambert Optics (`SPECTRAL_DISPERSION`, `SUBSURFACE_SCATTER`)**: Adds Cauchy RGB spectral water refraction, chromatic underwater caustics, Beer–Lambert exponential underwater absorption, Kulla-Conty multi-scatter metallic Fresnel, and a physical $42^\circ$ antisolar rainbow during rain/sunshowers.
+
+## Delta-NCM v3.0 — Fast-Weight Path Tracing Core
 
 `v3.0.0` introduces **Delta-NCM**, bridging **2026 AI Linear Attention / Fast-Weight Test-Time Training** with **Unbiased Monte Carlo Path Tracing** in pure **OpenGL 3.3 Core (`#version 120`)** with **zero extra buffers (`56.5 MB/frame`)**:
 

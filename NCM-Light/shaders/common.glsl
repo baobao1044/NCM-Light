@@ -147,7 +147,7 @@ void unpackSurfaceData(vec4 surf, out bool valid, out vec3 worldNormal,
                        out float blockLight, out float skyLight, out float matTag)
 {
     float rawByte = floor(surf.w * 255.0 + 0.5);
-    if (rawByte < 21.0) {
+    if (rawByte < 32.0) {
         valid = false;
         worldNormal = vec3(0.0, 1.0, 0.0);
         blockLight = 0.0;
@@ -156,8 +156,8 @@ void unpackSurfaceData(vec4 surf, out bool valid, out vec3 worldNormal,
         return;
     }
     valid = true;
-    matTag = floor((rawByte + 2.0) / 42.0);
-    skyLight = clamp((rawByte - matTag * 42.0) / 36.0, 0.0, 1.0);
+    matTag = floor(rawByte / 32.0);
+    skyLight = clamp((rawByte - matTag * 32.0) / 31.0, 0.0, 1.0);
     worldNormal = octDecodeNormal(surf.xy);
     blockLight = surf.z;
 }
@@ -615,14 +615,14 @@ vec3 evaluatePathVertexRadiance(vec2 hitUV, vec3 hitViewPos) {
     vec3 hitAlbedo = srgbToLinear(texture2D(colortex0, hitUV).rgb);
     vec4 hitSurf = texture2D(colortex3, hitUV);
     float rawByte = floor(hitSurf.w * 255.0 + 0.5);
-    if (rawByte < 21.0) return hitAlbedo * 0.75;
+    if (rawByte < 32.0) return hitAlbedo * 0.75;
 
-    float hitMat = floor((rawByte + 2.0) / 42.0);
+    float hitMat = floor(rawByte / 32.0);
     if (abs(hitMat - 5.0) < 0.5) {
         return hitAlbedo * 7.2;
     }
 
-    float hitSky = clamp((rawByte - hitMat * 42.0) / 36.0, 0.0, 1.0);
+    float hitSky = clamp((rawByte - hitMat * 32.0) / 31.0, 0.0, 1.0);
     float hitBlock = hitSurf.z;
     float sunNEE = evaluateSecondarySunNEE(hitViewPos);
     vec3 sunIrrad = directCelestialIrradiance() * directLightWeatherFade();
@@ -870,8 +870,8 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
    Carves crisp 1080p contact bevels where dirt meets grass, stairs, slabs & foliage bases! */
 float microCreviceAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
     float viewDist = -viewPos.z;
-    if (viewDist > 24.0) return 1.0;
-    float fade = 1.0 - smoothstep(16.0, 24.0, viewDist);
+    if (viewDist > 18.0) return 1.0;
+    float fade = 1.0 - smoothstep(12.0, 18.0, viewDist);
     vec2 stepUV = vec2(3.0 / max(viewWidth, 1.0), 3.0 / max(viewHeight, 1.0));
 
     float dA = texture2D(depthtex1, clamp(uv + stepUV, 0.002, 0.998)).r;
@@ -895,10 +895,10 @@ float microCreviceAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
     return 1.0 - clamp(occ * 0.62 * fade, 0.0, 0.42);
 }
 
-/* ====== GGX Micro-Facet Specular Highlight for All Outdoor Surfaces ====== */
+/* ====== Multi-Scatter GGX, Thin-Film Iridescence, Glints & Thick SSS ====== */
 
-vec3 evaluateGGXSpecular(vec3 worldNormal, vec3 viewDirToSurface, vec3 lightDir,
-                         float roughness, float f0)
+vec3 evaluateGGXSpecularRGB(vec3 worldNormal, vec3 viewDirToSurface, vec3 lightDir,
+                            float roughness, vec3 f0)
 {
     vec3 V = -viewDirToSurface;
     vec3 H = normalize(V + lightDir);
@@ -914,8 +914,84 @@ vec3 evaluateGGXSpecular(vec3 worldNormal, vec3 viewDirToSurface, vec3 lightDir,
 
     float omc = 1.0 - vdoth;
     float omc2 = omc * omc;
-    float F = f0 + (1.0 - f0) * (omc2 * omc2 * omc);
-    return vec3(min(D * F * ndotl * 0.32, 1.6));
+    vec3 F = f0 + (vec3(1.0) - f0) * (omc2 * omc2 * omc);
+    /* Kulla-Conty / Turquin multi-scattering specular energy compensation for rough conductors */
+    vec3 msComp = vec3(1.0) + f0 * (roughness * 0.55);
+    return min(D * F * msComp * (ndotl * 0.32), vec3(1.85));
+}
+
+vec3 thinFilmIridescence(float cosTheta, float filmThickness) {
+#if !SPECTRAL_DISPERSION
+    return vec3(1.0);
+#else
+    /* Analytical thin-film spectral interference (R=650nm, G=530nm, B=450nm) */
+    float opd = filmThickness * sqrt(max(1.0 - (1.0 - cosTheta * cosTheta) * 0.56, 0.05));
+    vec3 phase = opd * vec3(9.66, 11.85, 13.96);
+    return 0.72 + 0.28 * cos(phase);
+#endif
+}
+
+float evaluateMicroGlints(vec3 worldPos, vec3 worldNormal, vec3 viewDirToSurface,
+                          vec3 lightDir, float sparkleDensity)
+{
+    vec3 H = normalize(-viewDirToSurface + lightDir);
+    vec3 cell = floor(worldPos * sparkleDensity + worldNormal * 0.25);
+    vec3 p3 = fract(cell * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yxz + 33.33);
+    vec3 rnd = fract((p3.xxy + p3.yzz) * p3.zyx) * 2.0 - 1.0;
+    vec3 microN = normalize(worldNormal + rnd * 0.42);
+    float d = max(dot(microN, H), 0.0);
+    float g = d * d; g *= g; g *= g; g *= g; g *= g;
+    return smoothstep(0.55, 0.98, g);
+}
+
+vec3 evaluateThickSSS(vec3 camRel, vec3 worldNormal, vec3 viewDirToSurface,
+                      vec3 lightDir, vec3 albedoLin)
+{
+#if !SUBSURFACE_SCATTER || defined(DIMENSION_NETHER) || defined(DIMENSION_END)
+    return vec3(0.0);
+#else
+    float backView = clamp(dot(viewDirToSurface, lightDir), 0.0, 1.0);
+    float wrapLit = clamp(dot(worldNormal, lightDir) * 0.5 + 0.5, 0.0, 1.0);
+    float thickFactor = 0.55;
+#if SHADOWS
+    vec3 shFeet = camRel - worldNormal * 0.08;
+    vec4 shView = shadowModelView * vec4(shFeet, 1.0);
+    vec4 shClip = shadowProjection * shView;
+    vec3 preNDC = shClip.xyz / max(shClip.w, 1e-5);
+    if (max(abs(preNDC.x), abs(preNDC.y)) < 0.96) {
+        vec3 sUVZ = distortShadowNDC(preNDC) * 0.5 + 0.5;
+        float occluderZ = texture2D(shadowtex1, clamp(sUVZ.xy, 0.002, 0.998)).r;
+        float opticalDepth = max(sUVZ.z - occluderZ, 0.0) * 140.0;
+        thickFactor = exp(-opticalDepth * 1.45);
+    }
+#endif
+    /* Snow/Ice tint cool cyan in thick regions; Honey/Slime/Coral transmit warm saturated albedo */
+    vec3 scatterTint = mix(vec3(0.45, 0.82, 1.0), clamp(albedoLin * 1.55, 0.15, 1.35), 0.65);
+    float hgLobe = 0.22 + 0.78 * (backView * backView * backView);
+    return scatterTint * (thickFactor * (0.28 * wrapLit + 0.55 * hgLobe));
+#endif
+}
+
+vec3 evaluateAtmosphericRainbow(vec3 viewDir, vec3 sunDir) {
+#if !SPECTRAL_DISPERSION || defined(DIMENSION_NETHER) || defined(DIMENSION_END)
+    return vec3(0.0);
+#else
+    float rain = clamp(rainStrength, 0.0, 1.0);
+    float sunUp = smoothstep(0.04, 0.35, sunElevation()) * (1.0 - smoothstep(0.55, 0.82, sunElevation()));
+    if (rain < 0.04 || sunUp < 0.01 || viewDir.y < 0.0) return vec3(0.0);
+    /* Primary physical rainbow at 42 degrees antisolar (cos(42 deg) = 0.7431) */
+    float antiCos = dot(viewDir, -sunDir);
+    float ang = (antiCos - 0.7431) * 48.0;
+    if (abs(ang) > 2.4) return vec3(0.0);
+    vec3 spectral = vec3(
+        exp(-pow(ang + 0.55, 2.0) * 2.2),
+        exp(-pow(ang,        2.0) * 2.5),
+        exp(-pow(ang - 0.55, 2.0) * 2.2)
+    );
+    float mask = rain * (1.0 - 0.55 * rain) * sunUp * smoothstep(0.0, 0.14, viewDir.y);
+    return spectral * (mask * 0.22);
+#endif
 }
 
 /* == Multiscale Volumetric Clouds, Night Aurora & End Accretion Vortex == */
@@ -1050,7 +1126,14 @@ vec4 evaluateCloudEdgeRefine(vec3 dir) {
 #endif
 }
 
-/* ======= Procedural Water Caustics (Zero Texture Reads) ======= */
+/* ======= Chromatic Dispersion Water Caustics (Zero Texture Reads) ======= */
+
+float causticLobe(vec2 p, float t) {
+    float w1 = sin(p.x * 2.3 + p.y * 1.4 + t) * cos(p.y * 2.1 - p.x * 1.2 - t * 0.8);
+    float w2 = sin(p.x * 1.6 - p.y * 2.5 - t * 1.1) * cos(p.y * 1.8 + p.x * 1.9 + t * 0.9);
+    float c = clamp(1.0 - abs(w1 + w2), 0.0, 1.0);
+    return c * c * c;
+}
 
 vec3 evaluateWaterCaustics(vec3 floorWorldPos, vec3 lightDir, float waterDepth, float sunLit) {
 #if !WATER_CAUSTICS || defined(DIMENSION_NETHER) || defined(DIMENSION_END)
@@ -1059,12 +1142,19 @@ vec3 evaluateWaterCaustics(vec3 floorWorldPos, vec3 lightDir, float waterDepth, 
     if (sunLit <= 0.01 || waterDepth <= 0.04) return vec3(0.0);
     vec2 p = floorWorldPos.xz - floorWorldPos.y * (lightDir.xz / max(lightDir.y, 0.28));
     float t = frameTimeCounter * 1.45;
-    float w1 = sin(p.x * 2.3 + p.y * 1.4 + t) * cos(p.y * 2.1 - p.x * 1.2 - t * 0.8);
-    float w2 = sin(p.x * 1.6 - p.y * 2.5 - t * 1.1) * cos(p.y * 1.8 + p.x * 1.9 + t * 0.9);
-    float c = clamp(1.0 - abs(w1 + w2), 0.0, 1.0);
-    c = c * c * c;
     float depthMask = smoothstep(0.04, 0.55, waterDepth) / (1.0 + 0.10 * waterDepth);
+#if SPECTRAL_DISPERSION
+    vec2 disp = vec2(0.075, -0.055) * clamp(waterDepth * 0.45, 0.25, 1.15);
+    vec3 cRGB = vec3(
+        causticLobe(p - disp, t),
+        causticLobe(p,        t),
+        causticLobe(p + disp, t)
+    );
+    return directCelestialIrradiance() * vec3(0.70, 0.94, 1.12) * (cRGB * depthMask * sunLit * 1.12);
+#else
+    float c = causticLobe(p, t);
     return directCelestialIrradiance() * vec3(0.55, 0.88, 1.05) * (c * depthMask * sunLit * 1.10);
+#endif
 #endif
 }
 

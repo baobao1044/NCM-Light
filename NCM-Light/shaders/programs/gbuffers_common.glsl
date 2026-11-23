@@ -3,7 +3,7 @@
     Bit-exact 32-bit RGBA8 packing in colortex3 (50% less VRAM bandwidth than RGBA16F!):
       .xy = Octahedral World Normal mapped to [0, 1]
       .z  = Blocklight [0, 1]
-      .w  = Exact Material Tag (1..5) * 42 + Quantised Skylight (0..36) / 255
+      .w  = 3-bit Material Class (1..7) * 32 + 5-bit Skylight (0..31) / 255
 */
 
 #ifndef NCM_GBUFFERS_COMMON_GLSL
@@ -40,6 +40,8 @@ float classifyMaterialTag(float blockId) {
     if (abs(blockId - 10200.0) < 0.5) return 5.0;
     if (abs(blockId - 10300.0) < 0.5) return 3.0;
     if (abs(blockId - 10400.0) < 0.5) return 4.0;
+    if (abs(blockId - 10600.0) < 0.5) return 6.0;
+    if (abs(blockId - 10700.0) < 0.5) return 7.0;
     return 1.0;
 }
 
@@ -49,7 +51,7 @@ vec4 packSurfaceData(vec3 worldNormal, vec2 lmcoord, float matTag) {
     vec2 oct01 = octEncodeNormal(n);
     float blockLight = clamp((lmcoord.x - 0.03125) / 0.9375, 0.0, 1.0);
     float skyLight   = clamp((lmcoord.y - 0.03125) / 0.9375, 0.0, 1.0);
-    float packedW = (matTag * 42.0 + floor(skyLight * 36.0 + 0.5)) / 255.0;
+    float packedW = (clamp(floor(matTag + 0.5), 1.0, 7.0) * 32.0 + floor(skyLight * 31.0 + 0.5)) / 255.0;
     return vec4(oct01, blockLight, packedW);
 }
 
