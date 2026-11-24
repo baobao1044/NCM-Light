@@ -1079,43 +1079,79 @@ float cloudFBM(vec2 p) {
     return v;
 }
 
+float cosmicHash31(vec3 p) {
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+float cosmicNoise3D(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    float n000 = cosmicHash31(i + vec3(0.0, 0.0, 0.0));
+    float n100 = cosmicHash31(i + vec3(1.0, 0.0, 0.0));
+    float n010 = cosmicHash31(i + vec3(0.0, 1.0, 0.0));
+    float n110 = cosmicHash31(i + vec3(1.0, 1.0, 0.0));
+    float n001 = cosmicHash31(i + vec3(0.0, 0.0, 1.0));
+    float n101 = cosmicHash31(i + vec3(1.0, 0.0, 1.0));
+    float n011 = cosmicHash31(i + vec3(0.0, 1.0, 1.0));
+    float n111 = cosmicHash31(i + vec3(1.0, 1.0, 1.0));
+    float nx00 = mix(n000, n100, u.x);
+    float nx10 = mix(n010, n110, u.x);
+    float nx01 = mix(n001, n101, u.x);
+    float nx11 = mix(n011, n111, u.x);
+    return mix(mix(nx00, nx10, u.y), mix(nx01, nx11, u.y), u.z);
+}
+
+float cosmicFBM3D(vec3 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+        v += a * cosmicNoise3D(p);
+        p = p * 2.04 + vec3(13.7, 29.3, 19.1);
+        a *= 0.5;
+    }
+    return v;
+}
+
 vec4 evaluateVolumetricSkyL0(vec3 dir) {
 #if defined(DIMENSION_NETHER)
     return vec4(0.0, 0.0, 0.0, 1.0);
 #elif defined(DIMENSION_END)
-    /* Layer 1 (0.25x quarter-res): Astronomical Milky Way Galactic Plane, Great Rift Dust Lanes
-       & Hubble-Palette H-alpha / [O III] Nebulae. Sets skyTrans = 0.0 to completely replace
-       Vanilla's noisy purple end_sky.png with pitch-black cosmic vacuum! */
+    /* Layer 1 (0.25x quarter-res): 100% SEAMLESS 3D-Spherical Milky Way (ZERO atan branch cuts!),
+       Great Rift Dark Molecular Dust Lanes & Hubble-Palette H-alpha / [O III] Nebulae! */
     vec3 galNorth = normalize(vec3(0.32, 0.78, -0.54));
     vec3 galCore  = normalize(vec3(-0.76, 0.42, 0.49));
     vec3 galEast  = normalize(cross(galNorth, galCore));
 
     float lat = dot(dir, galNorth);
-    float lon = atan(dot(dir, galEast), dot(dir, galCore));
-    vec2 gUV = vec2(lon * 1.45, lat * 4.2);
+    float coreDot = dot(dir, galCore);
+    float eastDot = dot(dir, galEast);
 
-    /* Multi-octave warped nebular turbulence + Great Rift molecular dust lanes */
-    float nBase = cloudFBM(gUV * 1.35 + vec2(3.1, -1.7));
-    float nWarp = cloudFBM(gUV * 2.40 + vec2(nBase * 1.4, -nBase * 1.1));
-    float nFine = cloudFBM(gUV * 4.20 - vec2(nWarp * 0.9, nBase * 0.8));
+    /* Continuous 3D galactic coordinates (C-infinity everywhere on the 360-deg sky sphere!) */
+    vec3 gPos = vec3(coreDot * 2.6, eastDot * 2.6, lat * 4.8);
+    float nBase = cosmicFBM3D(gPos + vec3(2.3, -1.5, 4.1));
+    float nWarp = cosmicFBM3D(gPos * 1.75 + vec3(nBase * 1.3, -nBase * 1.1, nBase * 0.7));
+    float nFine = cosmicFBM3D(gPos * 3.10 - vec3(nWarp * 0.85, nBase * 0.75, -nWarp * 0.6));
 
     float planeWide = exp(-lat * lat * 9.5);
     float planeCore = exp(-lat * lat * 26.0);
-    float bulge     = exp(-lat * lat * 13.0 - lon * lon * 1.25);
+    float bulge     = exp(-lat * lat * 13.0) * pow(max(coreDot, 0.0), 2.0);
 
     /* Dark molecular dust absorption rift carving dramatic contrast through the Milky Way */
-    float dustMask = smoothstep(0.30, 0.68, nWarp * 0.70 + nFine * 0.30) * exp(-lat * lat * 32.0);
+    float dustMask = smoothstep(0.32, 0.68, nWarp * 0.68 + nFine * 0.32) * exp(-lat * lat * 32.0);
     float dustTrans = 1.0 - 0.88 * dustMask;
 
-    /* Deep cosmic vacuum + Sapphire spiral arms + Rich Golden-Amber Galactic Core (non-washed contrast!) */
+    /* Deep cosmic vacuum + Sapphire spiral arms + Rich Golden-Amber Galactic Core */
     vec3 vacuum   = vec3(0.0018, 0.0026, 0.0072);
     vec3 armGlow  = vec3(0.045, 0.11, 0.32) * (planeWide * (0.40 + 0.85 * nBase));
-    vec3 coreGlow = vec3(0.82, 0.48, 0.22) * (bulge * (0.50 + 0.75 * nWarp) * 0.44);
+    vec3 coreGlow = vec3(0.82, 0.48, 0.22) * (bulge * (0.50 + 0.75 * nWarp) * 0.48);
     vec3 starCloud = vec3(0.22, 0.30, 0.56) * (planeCore * nFine * 0.42);
 
     /* Hubble-palette H-II Emission Nebulae: crimson H-alpha (656nm) + cyan-teal [O III] (501nm) */
-    float h2Region = smoothstep(0.50, 0.82, nBase * 0.55 + nFine * 0.45) * planeWide;
-    float o3Region = smoothstep(0.54, 0.84, cloudFBM(gUV * 2.1 + vec2(11.3, 5.7))) * planeWide;
+    float h2Region = smoothstep(0.48, 0.80, nBase * 0.55 + nFine * 0.45) * planeWide;
+    float o3Region = smoothstep(0.52, 0.82, cosmicFBM3D(gPos * 1.55 + vec3(9.4, 5.2, -7.1))) * planeWide;
     vec3 nebHa = vec3(0.62, 0.10, 0.30) * (h2Region * 0.36);
     vec3 nebO3 = vec3(0.05, 0.40, 0.56) * (o3Region * 0.32);
 
