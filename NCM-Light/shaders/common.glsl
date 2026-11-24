@@ -13,6 +13,7 @@
     const int colortex3Format = RGBA8;
     const int colortex4Format = RGBA16F;
     const int colortex5Format = RGBA16F;
+    const int colortex6Format = R11F_G11F_B10F;
     const int shadowcolor0Format = RGBA8;
     const float shadowIntervalSize = 2.0;
     const float shadowDistanceRenderMul = 1.0;
@@ -25,6 +26,7 @@
 
 const bool colortex4Clear = false;
 const bool colortex5Clear = false;
+const bool colortex6Clear = false;
 
 /* ============================= Constants ============================= */
 
@@ -59,6 +61,7 @@ uniform sampler2D colortex2;    /* full-res RGBA8:  (rays,  wL1, packedTrans, vo
 uniform sampler2D colortex3;    /* full-res RGBA8:  (oct01.xy, blockLight, matSkyByte) */
 uniform sampler2D colortex4;    /* 1/4-res Delta-NCM Fast-Weight G0.rgb + normDepth (RGBA16F) */
 uniform sampler2D colortex5;    /* 1/4-res Delta-NCM Kaczmarz SH L1.xyz + signedInnov (RGBA16F) */
+uniform sampler2D colortex6;    /* 1/4-res Dual-Pass Karis Cinema HDR Bloom (R11G11B10F) */
 
 uniform sampler2D depthtex0;
 uniform sampler2D depthtex1;
@@ -261,8 +264,8 @@ vec3 activeLightDirView(out float valid) {
 
 vec3 worldShadowLightDir() {
 #if defined(DIMENSION_END)
-    /* Gargantua Supermassive Black Hole sky direction lights End islands with dramatic cosmic key light! */
-    return normalize(vec3(0.46, 0.52, -0.72));
+    /* Colossal Gargantua Supermassive Black Hole direction lights End islands with warm golden key light! */
+    return normalize(vec3(0.36, 0.34, -0.869));
 #else
     float valid;
     vec3 vDir = activeLightDirView(valid);
@@ -289,8 +292,8 @@ vec3 directCelestialIrradiance() {
 #if defined(DIMENSION_NETHER)
     return vec3(0.0);
 #elif defined(DIMENSION_END)
-    /* Warm golden-amber accretion disk illumination from the End Black Hole */
-    return vec3(0.42, 0.30, 0.22);
+    /* Luminous golden-amber accretion disk key light from Gargantua sculpting End islands & towers */
+    return vec3(1.18, 0.74, 0.40);
 #else
     float up = sunElevation();
     float day = smoothstep(-0.02, 0.22, up);
@@ -310,8 +313,8 @@ vec3 skyAmbientIrradiance() {
 #if defined(DIMENSION_NETHER)
     return max(srgbToLinear(fogColor) * 0.95, vec3(0.14, 0.05, 0.04));
 #elif defined(DIMENSION_END)
-    /* Deep cosmic sapphire-violet starlight fill contrasting with warm Gargantua key light */
-    return vec3(0.11, 0.13, 0.24);
+    /* Deep cosmic sapphire-indigo starlight fill creating rich warm-vs-cool cinema contrast */
+    return vec3(0.11, 0.14, 0.30);
 #else
     float up = sunElevation();
     float day = smoothstep(-0.10, 0.26, up);
@@ -335,7 +338,7 @@ vec3 hazeTintLinear() {
     float fLen = dot(fogColor, fogColor);
     return (fLen > 1e-4) ? srgbToLinear(fogColor) * 1.2 : vec3(0.14, 0.02, 0.015);
 #elif defined(DIMENSION_END)
-    return vec3(0.03, 0.018, 0.055);
+    return vec3(0.014, 0.016, 0.048);
 #else
     float up = sunElevation();
     float day = smoothstep(-0.08, 0.26, up);
@@ -1115,57 +1118,156 @@ float cosmicFBM3D(vec3 p) {
     return v;
 }
 
+float cosmicFBM3D3(vec3 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 3; i++) {
+        v += a * cosmicNoise3D(p);
+        p = p * 2.04 + vec3(13.7, 29.3, 19.1);
+        a *= 0.5;
+    }
+    return v;
+}
+
+float diskFBM2D(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    mat2 rot = mat2(0.80, -0.60, 0.60, 0.80);
+    for (int i = 0; i < 3; i++) {
+        v += a * cloudNoise2D(p);
+        p = rot * p * 2.04 + vec2(17.1, 31.7);
+        a *= 0.5;
+    }
+    return v;
+}
+
+/* Monotonic, Zero-Bubble Asymptotic Einstein-Schwarzschild Gravitational Lensing */
+vec3 applyEinsteinLensing(vec3 dir, vec3 bhDir) {
+    float bhDot = dot(dir, bhDir);
+    float sinTh = sqrt(max(1.0 - bhDot * bhDot, 0.0));
+    float thetaE = 0.168;
+    float deflAmt = (thetaE * thetaE) / (sinTh + 0.095) * exp(-sinTh * 4.2) * smoothstep(0.55, 0.85, bhDot);
+    vec3 tang = dir - bhDir * bhDot;
+    float tLen = max(length(tang), 1e-5);
+    return normalize(dir - (tang / tLen) * deflAmt);
+}
+
+/* Fast 5-Tap Screen-Space Gargantua Contact Shadows for The End Terrain & Obsidian Pillars */
+float traceEndContactShadow(vec3 viewPos, vec3 worldNormal) {
+#if !defined(DIMENSION_END)
+    return 1.0;
+#else
+    float distFade = 1.0 - smoothstep(34.0, 52.0, -viewPos.z);
+    if (distFade <= 0.01) return 1.0;
+    vec3 bhWorld = worldShadowLightDir();
+    if (dot(worldNormal, bhWorld) <= 0.01) return 0.0;
+
+    vec3 viewN = normalize(mat3(gbufferModelView) * worldNormal);
+    vec3 lightView = normalize(mat3(gbufferModelView) * bhWorld);
+    vec3 startPos = viewPos + viewN * max(0.06, -viewPos.z * 0.004);
+
+    float occ = 0.0;
+    float t = 0.28;
+    for (int i = 0; i < 5; i++) {
+        vec3 probe = startPos + lightView * t;
+        if (probe.z >= -near) break;
+        vec3 proj = fastProjectToScreen(probe);
+        if (proj.z < 0.0 || proj.x <= 0.004 || proj.x >= 0.996 || proj.y <= 0.004 || proj.y >= 0.996) {
+            break;
+        }
+        float sd = texture2D(depthtex2, proj.xy).r;
+        if (sd < 0.9999) {
+            float vz = fastViewZ(sd);
+            float pen = vz - probe.z;
+            float thickLim = 0.42 + 0.24 * t;
+            if (pen > 0.045 && pen < thickLim) {
+                float hitW = smoothstep(0.045, 0.18, pen) * (1.0 - smoothstep(thickLim * 0.65, thickLim, pen));
+                float border = min(min(proj.x, 1.0 - proj.x), min(proj.y, 1.0 - proj.y));
+                occ = max(occ, hitW * smoothstep(0.0, 0.05, border));
+            }
+        }
+        t *= 1.98;
+    }
+    return 1.0 - 0.80 * occ * distFade;
+#endif
+}
+
+/* Layer 1 (0.25x quarter-res) End Cosmos: Seamless 3D Lensed Milky Way + 4-Layer Volumetric Space Clouds */
+void evaluateEndSkyL0(vec3 dir, out vec3 outMilkyWay, out vec3 outClouds, out float outCloudTrans) {
+    vec3 bhDir = worldShadowLightDir();
+    vec3 bentDir = applyEinsteinLensing(dir, bhDir);
+
+    /* 1. Deep OLED-Black Vacuum + Seamless 3D-Spherical Milky Way (ZERO atan branch cuts!) */
+    vec3 galNorth = normalize(vec3(0.24, 0.84, -0.49));
+    vec3 galCore  = normalize(vec3(-0.82, 0.42, 0.39) - galNorth * dot(vec3(-0.82, 0.42, 0.39), galNorth));
+    vec3 galEast  = normalize(cross(galNorth, galCore));
+
+    float lat = dot(bentDir, galNorth);
+    float coreDot = dot(bentDir, galCore);
+    float eastDot = dot(bentDir, galEast);
+
+    vec3 gPos = vec3(coreDot * 2.7, eastDot * 2.7, lat * 5.0);
+    float nBase = cosmicFBM3D(gPos + vec3(2.3, -1.5, 4.1));
+    float nWarp = cosmicFBM3D(gPos * 1.85 + vec3(nBase * 1.35, -nBase * 1.15, nBase * 0.75));
+    float nFine = cosmicFBM3D3(gPos * 3.80 - vec3(nWarp * 0.95, -nBase * 0.85, nWarp * 0.75));
+
+    float planeWide = exp(-lat * lat * 11.0);
+    float planeCore = exp(-lat * lat * 30.0);
+    float bulge     = exp(-lat * lat * 14.0) * pow(max(coreDot, 0.0), 2.2);
+
+    float dustCloud = smoothstep(0.36, 0.72, nWarp * 0.60 + nFine * 0.40) * exp(-lat * lat * 34.0);
+    float dustTrans = 1.0 - 0.90 * dustCloud;
+
+    vec3 vacuum    = vec3(0.0004, 0.0007, 0.0022);
+    vec3 armGlow   = vec3(0.022, 0.056, 0.22) * (planeWide * pow(max(nBase, 1e-4), 1.55) * 1.30);
+    vec3 starCloud = vec3(0.16, 0.28, 0.68) * (planeCore * (0.30 + 1.05 * nWarp) * (0.40 + 0.85 * nFine) * 0.56);
+    vec3 coreGlow  = vec3(1.05, 0.62, 0.30) * (bulge * (0.40 + 0.85 * nWarp) * 0.48);
+
+    float h2Region = smoothstep(0.52, 0.82, nBase * 0.55 + nFine * 0.45) * planeWide;
+    float o3Region = smoothstep(0.54, 0.84, cosmicFBM3D3(gPos * 1.65 + vec3(9.4, 5.2, -7.1))) * planeWide;
+    vec3 nebHa = vec3(0.46, 0.07, 0.36) * (h2Region * 0.28);
+    vec3 nebO3 = vec3(0.04, 0.34, 0.56) * (o3Region * 0.26);
+
+    outMilkyWay = vacuum + (armGlow + starCloud + coreGlow + nebHa + nebO3) * dustTrans;
+
+    /* 2. 4-Layer 3D Volumetric End Space Clouds (unbent local sky: royal indigo + golden Gargantua rim!) */
+    outClouds = vec3(0.0);
+    outCloudTrans = 1.0;
+    if (abs(dir.y) < 0.42) {
+        float bhCos = max(dot(dir, bhDir), 0.0);
+        float bh2 = bhCos * bhCos;
+        float hgSilver = bh2 * bh2 * bh2 * 1.65 + pow(max(bhCos, 1e-4), 2.5) * 0.18;
+        for (int i = 0; i < 4; i++) {
+            float fi = float(i);
+            float hLayer = -0.14 + 0.090 * fi;
+            float sc = 2.0 + 0.52 * fi;
+            vec3 cp = vec3(
+                dir.x * sc + frameTimeCounter * 0.012 * (1.0 + 0.25 * fi),
+                (dir.y - hLayer) * 6.8,
+                dir.z * sc - frameTimeCounter * 0.008 * (1.0 + 0.20 * fi)
+            );
+            float dRaw = cosmicFBM3D3(cp);
+            float dyH = (dir.y - hLayer) / 0.11;
+            float dens = smoothstep(0.46, 0.78, dRaw) * exp(-dyH * dyH) * 0.46;
+            if (dens > 0.002) {
+                float rim = hgSilver * (0.35 + 0.65 * dRaw);
+                vec3 cLit = vec3(0.024, 0.020, 0.110) + vec3(0.42, 0.22, 0.12) * rim;
+                float aStep = 1.0 - exp(-dens * 1.15);
+                outClouds += outCloudTrans * cLit * aStep;
+                outCloudTrans *= (1.0 - aStep * 0.65);
+            }
+        }
+    }
+}
+
 vec4 evaluateVolumetricSkyL0(vec3 dir) {
 #if defined(DIMENSION_NETHER)
     return vec4(0.0, 0.0, 0.0, 1.0);
 #elif defined(DIMENSION_END)
-    /* Layer 1 (0.25x quarter-res): 100% SEAMLESS 3D-Spherical Milky Way (ZERO atan branch cuts!),
-       Great Rift Dark Molecular Dust Lanes & Hubble-Palette H-alpha / [O III] Nebulae! */
-    vec3 galNorth = normalize(vec3(0.32, 0.78, -0.54));
-    vec3 galCore  = normalize(vec3(-0.76, 0.42, 0.49));
-    vec3 galEast  = normalize(cross(galNorth, galCore));
-
-    float lat = dot(dir, galNorth);
-    float coreDot = dot(dir, galCore);
-    float eastDot = dot(dir, galEast);
-
-    /* Continuous 3D galactic coordinates (C-infinity everywhere on the 360-deg sky sphere!) */
-    vec3 gPos = vec3(coreDot * 2.6, eastDot * 2.6, lat * 4.8);
-    float nBase = cosmicFBM3D(gPos + vec3(2.3, -1.5, 4.1));
-    float nWarp = cosmicFBM3D(gPos * 1.75 + vec3(nBase * 1.3, -nBase * 1.1, nBase * 0.7));
-    float nFine = cosmicFBM3D(gPos * 3.10 - vec3(nWarp * 0.85, nBase * 0.75, -nWarp * 0.6));
-
-    float planeWide = exp(-lat * lat * 9.5);
-    float planeCore = exp(-lat * lat * 26.0);
-    float bulge     = exp(-lat * lat * 13.0) * pow(max(coreDot, 0.0), 2.0);
-
-    /* Dark molecular dust absorption rift carving dramatic contrast through the Milky Way */
-    float dustMask = smoothstep(0.32, 0.68, nWarp * 0.68 + nFine * 0.32) * exp(-lat * lat * 32.0);
-    float dustTrans = 1.0 - 0.88 * dustMask;
-
-    /* Deep cosmic vacuum + Sapphire spiral arms + Rich Golden-Amber Galactic Core */
-    vec3 vacuum   = vec3(0.0018, 0.0026, 0.0072);
-    vec3 armGlow  = vec3(0.045, 0.11, 0.32) * (planeWide * (0.40 + 0.85 * nBase));
-    vec3 coreGlow = vec3(0.82, 0.48, 0.22) * (bulge * (0.50 + 0.75 * nWarp) * 0.48);
-    vec3 starCloud = vec3(0.22, 0.30, 0.56) * (planeCore * nFine * 0.42);
-
-    /* Hubble-palette H-II Emission Nebulae: crimson H-alpha (656nm) + cyan-teal [O III] (501nm) */
-    float h2Region = smoothstep(0.48, 0.80, nBase * 0.55 + nFine * 0.45) * planeWide;
-    float o3Region = smoothstep(0.52, 0.82, cosmicFBM3D(gPos * 1.55 + vec3(9.4, 5.2, -7.1))) * planeWide;
-    vec3 nebHa = vec3(0.62, 0.10, 0.30) * (h2Region * 0.36);
-    vec3 nebO3 = vec3(0.05, 0.40, 0.56) * (o3Region * 0.32);
-
-    /* Subtle high-latitude cosmic cirrus so looking straight up has deep astronomical depth */
-    float cirrus = smoothstep(0.45, 0.85, nWarp) * (1.0 - planeWide) * 0.06;
-    vec3 cosmic = vacuum + (armGlow + coreGlow + starCloud + nebHa + nebO3) * dustTrans + vec3(0.03, 0.05, 0.14) * cirrus;
-
-    /* Soft ambient corona around the Gargantua Black Hole direction */
-    vec3 bhDir = normalize(vec3(0.46, 0.52, -0.72));
-    float bhCos = max(dot(dir, bhDir), 0.0);
-    float bhHalo = pow(bhCos, 22.0) * 0.15 + pow(bhCos, 72.0) * 0.32;
-    cosmic += vec3(0.90, 0.46, 0.16) * bhHalo;
-
-    return vec4(cosmic, 0.0);
+    vec3 mw, cl;
+    float tr;
+    evaluateEndSkyL0(dir, mw, cl, tr);
+    return vec4(mw * tr + cl, 0.0);
 #else
     vec3 skyAdd = vec3(0.0);
     float skyTrans = 1.0;
@@ -1345,92 +1447,236 @@ vec3 evalStarLayer(vec2 suv, float faceId, float gridScale, float densityThresh,
     return planckStarColor(h2) * core;
 }
 
-vec3 evaluateEndCosmosFullRes(vec3 dir, vec3 baseNebulaHDR) {
+vec3 blackbodyDiskColor(float temp) {
+    /* Interstellar Planckian accretion disk color ramp: burnt crimson -> molten amber -> champagne gold -> blue-white */
+    float t = clamp(temp, 0.0, 2.5);
+    vec3 c0 = vec3(0.36, 0.035, 0.015);
+    vec3 c1 = vec3(1.10, 0.30, 0.04);
+    vec3 c2 = vec3(1.36, 0.88, 0.44);
+    vec3 c3 = vec3(1.28, 1.28, 1.42);
+    vec3 col = mix(c0, c1, clamp(t / 0.55, 0.0, 1.0));
+    col = mix(col, c2, clamp((t - 0.55) / 0.72, 0.0, 1.0));
+    col = mix(col, c3, clamp((t - 1.27) / 0.90, 0.0, 1.0));
+    return col;
+}
+
+void evalAccretionDiskPlasma(vec2 xz, vec3 rayV, out vec3 outEmit, out float outAbsorb) {
+    float rc = max(length(xz), 1e-4);
+
+    /* Seamless Cartesian-rotated Keplerian spiral shear (ZERO atan discontinuity!) */
+    float logR = log(max(rc, 0.5));
+    float twist1 = 4.8 * logR - frameTimeCounter * (1.20 / pow(max(rc, 0.8), 1.25));
+    float c1 = cos(twist1), s1 = sin(twist1);
+    vec2 sp1 = vec2(xz.x * c1 - xz.y * s1, xz.x * s1 + xz.y * c1);
+    float n1 = diskFBM2D(sp1 * 0.50);
+
+    float twist2 = 8.8 * logR - frameTimeCounter * (1.60 / pow(max(rc, 0.8), 1.35));
+    float c2 = cos(twist2), s2 = sin(twist2);
+    vec2 sp2 = vec2(xz.x * c2 - xz.y * s2, xz.x * s2 + xz.y * c2);
+    float n2 = diskFBM2D(sp2 * 0.95 + vec2(n1 * 1.60, -n1 * 1.40));
+
+    float rMod = rc + (n1 - 0.5) * 1.35;
+    float band1 = 0.5 + 0.5 * sin(rMod * 3.6 + n2 * 2.9);
+    float band2 = 0.5 + 0.5 * cos(rMod * 7.8 - n1 * 3.4);
+    float plasma = (0.24 + 0.76 * band1) * (0.40 + 0.60 * band2) * (0.22 + 1.45 * n2 * n2);
+
+    float inner = smoothstep(1.92, 2.65, rc);
+    float outer = 1.0 - smoothstep(4.2, 10.6, rc);
+    float radial = inner * pow(max(outer, 1e-4), 1.50) * pow(2.60 / max(rc, 1.0), 1.15);
+    float dens = radial * (0.18 + 1.25 * plasma);
+
+    /* Physical Relativistic Doppler Beaming (approaching left blazing white-gold, receding fiery amber!) */
+    float vOrbMag = min(sqrt(0.56 / max(rc - 0.95, 0.35)), 0.58);
+    vec2 vOrb = vec2(xz.y / rc, -xz.x / rc) * vOrbMag;
+    vec3 vUnit = normalize(rayV);
+    float dop = dot(vOrb, -vUnit.xz);
+    float beaming = clamp(1.0 / (1.0 - dop * 0.76), 0.44, 2.18);
+    float gRed = sqrt(clamp(1.0 - 1.0 / max(rc, 1.05), 0.08, 1.0));
+
+    float temp = (1.62 * pow(2.50 / max(rc, 1.2), 0.64) * (0.48 + 0.62 * plasma)) * pow(beaming, 0.62) * gRed;
+    outEmit = blackbodyDiskColor(temp) * (dens * 1.92 * pow(beaming, 1.48) * gRed);
+    outAbsorb = radial * (1.15 + 1.55 * (1.0 - 0.5 * n2) + 0.95 * plasma);
+}
+
+vec3 evaluateEndCosmosFullRes(vec3 dir, vec3 baseMilkyWayHDR, vec3 endCloudsHDR, float endCloudTrans) {
 #if !defined(DIMENSION_END)
-    return baseNebulaHDR;
+    return baseMilkyWayHDR;
 #else
-    /* Layer 2 (1080p full-res, 0 texture fetches): Crisp 3-Tier Planck Blackbody Starfield,
-       Andromeda-style Spiral Galaxy (M31) & Gargantua Relativistic Black Hole with Lensed Disk! */
+    /* Layer 2 (1080p full-res, 0 texture fetches):
+       1. Monotonic Einstein Lensing + 1080p Milky Way Micro-Detail Sharpening
+       2. Crisp 3-Tier Lensed Planck Starfield + Refined Andromeda M31 Spiral Galaxy
+       3. True 3D Schwarzschild Null Geodesic Gargantua Black Hole (Velocity Verlet, exact GR!)
+       4. Sweeping Translucent Celestial Orbital Ring + 3D Volumetric End Space Clouds */
+    vec3 bhDir = worldShadowLightDir();
+    vec3 bentDir = applyEinsteinLensing(dir, bhDir);
+
+    vec3 galNorth = normalize(vec3(0.24, 0.84, -0.49));
+    float lat = dot(bentDir, galNorth);
+    float galPlane = exp(-lat * lat * 11.0);
+
+    /* Fast 1-tap 1080p high-frequency dust sharpening inside Milky Way band (eliminates 0.25x softness!) */
+    vec3 mwHDR = baseMilkyWayHDR;
+    if (abs(lat) < 0.46) {
+        float microDust = cosmicNoise3D(bentDir * 19.5 + vec3(3.1, -5.7, 2.4));
+        float sharpMod = mix(1.0, 0.72 + 0.62 * microDust, galPlane * 0.58);
+        mwHDR *= sharpMod;
+    }
+
     float faceId;
-    vec2 suv = cubeSphereUV(dir, faceId);
+    vec2 suv = cubeSphereUV(bentDir, faceId);
 
-    vec3 galNorth = normalize(vec3(0.32, 0.78, -0.54));
-    float galPlane = exp(-pow(dot(dir, galNorth), 2.0) * 14.0);
+    /* 3-tier crisp 1080p lensed starfield (dense Milky Way dust stars + colored giants + JWST spiked hero stars) */
+    vec3 stars = evalStarLayer(suv, faceId, 240.0, mix(0.954, 0.844, galPlane), 92.0, false) * (0.28 + 0.90 * galPlane);
+    stars     += evalStarLayer(suv, faceId, 120.0, mix(0.972, 0.917, galPlane), 80.0, false) * 1.05;
+    stars     += evalStarLayer(suv, faceId,  48.0, 0.980, 68.0, true) * 2.15;
 
-    /* 3-tier crisp 1080p starfield (dense Milky Way dust stars + colored giants + spiked hero stars) */
-    vec3 stars = evalStarLayer(suv, faceId, 210.0, mix(0.955, 0.865, galPlane), 72.0, false) * (0.35 + 0.75 * galPlane);
-    stars     += evalStarLayer(suv, faceId, 105.0, mix(0.968, 0.915, galPlane), 64.0, false) * 0.95;
-    stars     += evalStarLayer(suv, faceId,  42.0, 0.976, 56.0, true) * 1.65;
-
-    /* Distant Tilted Spiral Galaxy (Andromeda M31 style) in opposite quadrant */
-    vec3 m31Dir = normalize(vec3(-0.62, 0.46, -0.63));
+    /* Refined Tilted Andromeda M31 Spiral Galaxy */
+    vec3 m31Dir = normalize(vec3(-0.64, 0.44, -0.63));
     vec3 m31Col = vec3(0.0);
-    float m31Dot = dot(dir, m31Dir);
-    if (m31Dot > 0.94) {
+    float m31Dot = dot(bentDir, m31Dir);
+    if (m31Dot > 0.945) {
         vec3 mU = normalize(cross(vec3(0.0, 1.0, 0.0), m31Dir));
         vec3 mV = cross(m31Dir, mU);
-        vec2 mp = vec2(dot(dir, mU), dot(dir, mV));
-        /* Tilt galaxy plane by 28 deg and flatten into an inclined elliptical disk */
-        vec2 mr = vec2(mp.x * 0.88 - mp.y * 0.47, (mp.x * 0.47 + mp.y * 0.88) * 2.85);
+        vec2 mp = vec2(dot(bentDir, mU), dot(bentDir, mV));
+        vec2 mr = vec2(mp.x * 0.88 - mp.y * 0.47, (mp.x * 0.47 + mp.y * 0.88) * 3.05);
         float rad = length(mr);
         float ang = atan(mr.y, mr.x);
-        float spiral = 0.5 + 0.5 * cos(2.0 * ang - 6.8 * log(rad + 0.012));
-        float disk = exp(-rad * 14.5) * (0.35 + 0.65 * spiral * spiral);
-        float nuc  = exp(-rad * rad * 1800.0);
-        m31Col = vec3(0.38, 0.52, 0.95) * (disk * 0.52) + vec3(1.15, 0.88, 0.58) * (nuc * 1.15);
+        float spiral = 0.5 + 0.5 * cos(2.0 * ang - 7.2 * log(rad + 0.014));
+        float mDust = 0.55 + 0.45 * cloudNoise2D(mr * 28.0);
+        float disk = exp(-rad * 15.5) * (0.28 + 0.72 * spiral * spiral) * mDust;
+        float nuc  = exp(-rad * rad * 1900.0);
+        m31Col = vec3(0.34, 0.50, 0.96) * (disk * 0.52) + vec3(1.20, 0.88, 0.56) * (nuc * 1.15);
     }
 
-    vec3 col = baseNebulaHDR + stars + m31Col;
+    vec3 deepCosmos = mwHDR + stars + m31Col;
 
-    /* Gargantua-Style Relativistic Black Hole + Gravitational Lensing Accretion Disk */
-    vec3 bhDir = normalize(vec3(0.46, 0.52, -0.72));
+    /* True 3D Schwarzschild Null Geodesic Ray-Traced Gargantua Black Hole (d2p/dl2 = -1.5 * h2 * p / r^5) */
     float bhDot = dot(dir, bhDir);
-    if (bhDot > 0.80) {
+    vec3 bhEmit = vec3(0.0);
+    float bhTrans = 1.0;
+
+    if (bhDot > 0.72) {
         vec3 bU0 = normalize(cross(vec3(0.0, 1.0, 0.0), bhDir));
         vec3 bV0 = cross(bhDir, bU0);
-        vec2 bp0 = vec2(dot(dir, bU0), dot(dir, bV0));
-        /* Cinematic 16-deg accretion disk roll tilt */
-        vec2 bp = vec2(bp0.x * 0.961 - bp0.y * 0.276, bp0.x * 0.276 + bp0.y * 0.961);
-        float r = length(bp);
-        float rH = 0.064;
+        /* Cinematic 15.0-deg roll tilt */
+        vec3 bU = bU0 * 0.965926 - bV0 * 0.258819;
+        vec3 bV = bU0 * 0.258819 + bV0 * 0.965926;
 
-        /* 1. Event Horizon Shadow completely eclipses stars & nebulae behind the Black Hole */
-        float eclipse = smoothstep(rH * 0.95, rH * 1.04, r);
-        col *= eclipse;
+        float dX = dot(dir, bU);
+        float dY = dot(dir, bV);
+        float dZ = bhDot;
 
-        /* 2. Razor-sharp Einstein Photon Ring right around the shadow rim (r ~ 1.06 rH) */
-        float photonRing = exp(-pow((r - rH * 1.05) / (rH * 0.085), 2.0));
+        /* Majestic Interstellar framing: camera distance D = 15.2, elevation alpha = 7.6 deg */
+        float sinA = 0.132256;
+        float cosA = 0.991215;
+        vec3 p = vec3(0.0, 15.2 * sinA, -15.2 * cosA);
+        vec3 v = normalize(vec3(dX, dY * cosA - dZ * sinA, dY * sinA + dZ * cosA));
 
-        /* 3. Relativistic Plasma Swirl + Doppler Beaming */
-        float ang = atan(bp.y, bp.x);
-        float swirl1 = 0.62 + 0.38 * sin(ang * 3.0 - log(r + 0.02) * 14.0 - frameTimeCounter * 0.55);
-        float swirl2 = 0.65 + 0.35 * cos(ang * 5.0 + log(r + 0.02) * 20.0 - frameTimeCounter * 0.85);
-        float plasma = swirl1 * swirl2;
-        float doppler = clamp(0.70 - bp.x / (rH * 3.6), 0.30, 1.30);
-        vec3 diskHue = mix(vec3(0.95, 0.26, 0.06), vec3(1.32, 1.04, 0.72), clamp(doppler * 0.85, 0.0, 1.0));
-        diskHue = mix(diskHue, vec3(0.88, 0.96, 1.35), smoothstep(1.02, 1.30, doppler) * 0.38);
+        vec3 hVec = cross(p, v);
+        float h2 = dot(hVec, hVec);
 
-        /* 4. Iconic Interstellar Horizontal Accretion Band sweeping cleanly IN FRONT OF the event horizon */
-        float bandY = exp(-pow(bp.y / (rH * 0.16 + abs(bp.x) * 0.06), 2.0));
-        float bandX = exp(-pow(bp.x / (rH * 2.55), 2.4));
-        float frontStrip = bandY * bandX * (0.65 + 0.35 * smoothstep(-rH * 0.25, rH * 0.25, -bp.y));
+        float r2 = dot(p, p);
+        float r = sqrt(r2);
+        vec3 a = (-1.5 * h2 / (r2 * r2 * r)) * p;
 
-        /* 5. Gravitationally Lensed Upper & Lower Einstein Disk Arches (back of disk bent over & under!) */
-        float lensRing = exp(-pow((r - rH * 1.24) / (rH * 0.25), 2.0)) * smoothstep(rH * 0.96, rH * 1.07, r);
-        float lensArch = lensRing * (0.45 + 0.55 * abs(bp.y / max(r, 1e-4)));
+        vec3 accum = vec3(0.0);
+        float trans = 1.0;
+        float frontTrans = 1.0;
+        float minR = r;
 
-        /* 6. Delicate Relativistic Synchrotron Polar Plumes (short & subtle, never spotlight beams!) */
-        float jetWidth = exp(-pow(bp.x / (rH * 0.18 + abs(bp.y) * 0.10), 2.0));
-        float jetLen   = exp(-pow(abs(bp.y) / (rH * 2.2), 1.6)) * smoothstep(rH * 1.05, rH * 1.55, abs(bp.y));
-        vec3 polarJet  = vec3(0.28, 0.52, 1.10) * (jetWidth * jetLen * 0.14);
+        for (int step = 0; step < 36; step++) {
+            float dt = clamp(0.13 * (r - 0.62), 0.075, 1.05);
+            vec3 pNext = p + v * dt + a * (0.5 * dt * dt);
+            float nr2 = dot(pNext, pNext);
+            float nr = sqrt(nr2);
+            minR = min(minR, nr);
 
-        vec3 bhEmission = diskHue * ((frontStrip * 1.35 + lensArch * 0.95) * (0.52 + 0.75 * plasma) * doppler)
-                        + vec3(1.45, 1.22, 0.88) * (photonRing * (0.75 + 0.50 * doppler))
-                        + polarJet;
-        col += bhEmission;
+            /* Exact Analytical Equatorial Disk Crossing (ZERO step-slicing dots + 1-2 evals/ray!) */
+            if (p.y * pNext.y <= 0.0 && trans > 0.008) {
+                float frac = abs(p.y) / (abs(p.y) + abs(pNext.y) + 1e-6);
+                vec3 pCross = mix(p, pNext, frac);
+                float rcHit = length(pCross.xz);
+                if (rcHit > 1.88 && rcHit < 10.6) {
+                    vec3 em;
+                    float ab;
+                    evalAccretionDiskPlasma(pCross.xz, v, em, ab);
+                    float vyAbs = max(abs(v.y), 0.16);
+                    float pathDs = min((0.36 + 0.03 * max(rcHit - 2.0, 0.0)) / vyAbs, 1.85);
+                    bool isFront = (pCross.z < 0.0);
+                    float tauScale = isFront ? 1.40 : 0.85;
+                    float tau = clamp(ab * pathDs * tauScale, 0.0, 4.5);
+                    float aStep = 1.0 - exp(-tau);
+                    accum += trans * em * (pathDs * 1.12);
+                    float atten = 1.0 - aStep * 0.96;
+                    trans *= atten;
+                    if (isFront) frontTrans *= atten;
+                }
+            }
+
+            vec3 aNext = (-1.5 * h2 / max(nr2 * nr2 * nr, 1e-6)) * pNext;
+            vec3 vNext = v + (a + aNext) * (0.5 * dt);
+
+            p = pNext;
+            v = vNext;
+            a = aNext;
+            r2 = nr2;
+            r = nr;
+
+            if (r < 1.08) {
+                trans = 0.0;
+                break;
+            }
+            if (r > 18.5 && dot(p, v) > 0.0) {
+                break;
+            }
+        }
+
+        /* Razor-sharp Einstein Photon Ring 100% physically occluded by foreground disk (frontTrans)! */
+        float prArg = (minR - 1.54) / 0.072;
+        float photonRing = exp(-prArg * prArg) * smoothstep(1.06, 1.24, minR) * frontTrans;
+        float ringDop = clamp(1.08 - dX * 2.1, 0.50, 1.70);
+        accum += vec3(1.75, 1.24, 0.74) * (photonRing * ringDop);
+
+        /* Delicate inner relativistic gravitational corona */
+        float innerGlow = exp(-pow(max(minR - 1.54, 0.0) / 1.55, 1.40)) * smoothstep(1.08, 1.65, minR) * (0.14 * frontTrans);
+        accum += vec3(1.20, 0.66, 0.26) * innerGlow;
+
+        float coneFade = smoothstep(0.72, 0.80, bhDot);
+        bhEmit = accum * coneFade;
+        bhTrans = 1.0 - (1.0 - trans) * coneFade;
     }
 
-    return col;
+    vec3 hdr = deepCosmos * bhTrans + bhEmit;
+
+    /* Grand Sweeping Translucent Celestial Orbital Ring (unbent local End atmosphere frame!) */
+    vec3 ringCol = vec3(0.0);
+    if (dir.y > -0.05) {
+        vec3 ringN = normalize(vec3(-0.34, 0.84, 0.42));
+        float denom = dot(dir, ringN);
+        if (abs(denom) > 0.03) {
+            float tRing = 0.65 / denom;
+            if (tRing > 0.0 && tRing < 18.0) {
+                vec3 ringU = normalize(cross(vec3(0.0, 1.0, 0.0), ringN));
+                vec3 ringV = cross(ringN, ringU);
+                vec3 rp = dir * tRing;
+                vec2 ruv = vec2(dot(rp, ringU) - 0.55, dot(rp, ringV) + 0.35);
+                float rr = length(ruv);
+                float band = smoothstep(1.85, 2.25, rr) * (1.0 - smoothstep(2.95, 3.55, rr));
+                if (band > 0.002) {
+                    float casArg = (rr - 2.68) / 0.055;
+                    float cassini = 1.0 - 0.85 * exp(-casArg * casArg);
+                    float fineIce = 0.50 + 0.50 * (0.5 + 0.5 * sin(rr * 24.0)) * (0.62 + 0.38 * cos(rr * 64.0));
+                    float bhC = max(bhDot, 0.0);
+                    float distFade = smoothstep(17.5, 4.5, tRing) * smoothstep(-0.04, 0.16, dir.y);
+                    float bhClear = smoothstep(0.92, 0.82, bhDot);
+                    vec3 ringHue = mix(vec3(0.32, 0.46, 0.90), vec3(1.08, 0.72, 0.38), 0.50 * bhC);
+                    ringCol = ringHue * (band * cassini * fineIce * (0.35 + 0.75 * bhC) * distFade * bhClear * 0.21);
+                }
+            }
+        }
+    }
+
+    return hdr * endCloudTrans + endCloudsHDR + ringCol * endCloudTrans;
 #endif
 }
 
@@ -1439,12 +1685,15 @@ vec3 analyticSkyReflectionLinear(vec3 worldReflectDir) {
 #if defined(DIMENSION_NETHER)
     return hazeTintLinear() * mix(0.7, 1.3, horizon);
 #elif defined(DIMENSION_END)
-    /* Reflect the deep cosmic vacuum, Milky Way band & Gargantua golden corona on End obsidian/crystals/water */
-    vec3 galNorth = normalize(vec3(0.32, 0.78, -0.54));
-    vec3 bhDir = normalize(vec3(0.46, 0.52, -0.72));
-    float plane = exp(-pow(dot(worldReflectDir, galNorth), 2.0) * 10.0);
-    float bhGlow = pow(max(dot(worldReflectDir, bhDir), 0.0), 14.0);
-    return vec3(0.004, 0.006, 0.015) + vec3(0.14, 0.18, 0.42) * (plane * 0.55) + vec3(0.95, 0.52, 0.18) * (bhGlow * 0.65);
+    /* Reflect the deep cosmic vacuum, diagonal sapphire Milky Way & Gargantua golden glow */
+    vec3 galNorth = normalize(vec3(0.24, 0.84, -0.49));
+    vec3 bhDir = worldShadowLightDir();
+    float plane = exp(-pow(dot(worldReflectDir, galNorth), 2.0) * 11.0);
+    float bhGlow = pow(max(dot(worldReflectDir, bhDir), 0.0), 12.0);
+    float bhCore = pow(max(dot(worldReflectDir, bhDir), 0.0), 64.0);
+    return vec3(0.002, 0.004, 0.012)
+         + vec3(0.10, 0.18, 0.46) * (plane * 0.52)
+         + vec3(1.10, 0.58, 0.20) * (bhGlow * 0.58 + bhCore * 0.95);
 #else
     float up = sunElevation();
     float day = smoothstep(-0.08, 0.26, up);
@@ -1647,7 +1896,7 @@ void levelSetup(vec2 uv, out vec3 viewPos, out vec3 camRel, out vec3 dir,
     skyWeights = noGeometry ? vec2(SKY_HAZE_WEIGHT, SKY_RAYS_WEIGHT) : vec2(1.0, 1.0);
 }
 
-vec3 applyVolumetricsLinear(vec3 sceneHDR, float haze, float rays, float tHit, bool noGeometry) {
+vec3 applyVolumetricsLinear(vec3 sceneHDR, vec3 dir, float haze, float rays, float tHit, bool noGeometry) {
     vec3 color = sceneHDR;
 
     if (isEyeInWater == 2) {
@@ -1669,7 +1918,18 @@ vec3 applyVolumetricsLinear(vec3 sceneHDR, float haze, float rays, float tHit, b
 
     if (!noGeometry) {
         float hazeFactor = clamp(haze * FOG_STRENGTH, 0.0, FOG_CAP);
+#if defined(DIMENSION_END)
+        /* Directional Cosmic Void Mist: royal indigo abyss + golden Gargantua Mie forward scatter! */
+        vec3 bhDir = worldShadowLightDir();
+        float bhCos = max(dot(dir, bhDir), 0.0);
+        float bhMie = pow(bhCos, 5.0);
+        vec3 endMist = vec3(0.012, 0.015, 0.046)
+                     + vec3(0.028, 0.016, 0.068) * (1.0 - abs(dir.y))
+                     + vec3(0.32, 0.16, 0.055) * bhMie;
+        color = mix(color, endMist, hazeFactor);
+#else
         color = mix(color, hazeTintLinear(), hazeFactor);
+#endif
     }
 
     color += rays * RAYS_STRENGTH * shaftTintLinear();

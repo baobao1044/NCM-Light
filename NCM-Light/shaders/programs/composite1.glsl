@@ -97,9 +97,13 @@ void main() {
     float edgeGate0 = 0.0;
 
     if (noGeometry) {
+#if defined(DIMENSION_END)
+        evaluateEndSkyL0(dir, outG0, outL1, ao0);
+#else
         vec4 vSky = evaluateVolumetricSkyL0(dir);
         outG0 = vSky.rgb;
         ao0 = vSky.a;
+#endif
         normDepth = 1.0;
     } else {
         float currDist = -viewPos.z;

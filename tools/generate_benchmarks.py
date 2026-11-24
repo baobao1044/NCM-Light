@@ -1200,121 +1200,202 @@ def generate_sky_dimensions_bench():
     for sp in axB.spines.values(): sp.set_edgecolor(ACCENT_GREEN); sp.set_linewidth(1.3)
     axB.set_title("B. Night Sky: Emerald-to-Violet Aurora Borealis (Reflected in SSR!)", color=TEXT_MAIN, fontsize=9.8, fontweight="bold", pad=6)
 
-    # --- Panel C: Astronomical End Cosmos (Milky Way + Gargantua Black Hole + M31 + Planck Stars) ---
+    # --- Panel C: v4.0 True 3D Schwarzschild Geodesic Gargantua + Lensed 3D Milky Way + Orbital Ring + End Clouds ---
     axC = fig.add_subplot(gs[1, 0])
-    # Point camera right toward the Gargantua Black Hole + tilted Milky Way + M31 sky panorama
-    H_e, W_e = 180, 320
-    ue = np.linspace(-1.35, 1.35, W_e)
-    ve = np.linspace(0.05, 1.15, H_e)
-    uue, vve = np.meshgrid(ue, ve)
-    inv_e = 1.0 / np.sqrt(uue*uue + vve*vve + 1.0)
-    edx, edy, edz = uue*inv_e, vve*inv_e, -inv_e
+    H_e, W_e = 216, 384
+    fwd_e = np.array([0.30, 0.28, -0.91]); fwd_e /= np.linalg.norm(fwd_e)
+    rgt_e = np.cross(fwd_e, np.array([0.0, 1.0, 0.0])); rgt_e /= np.linalg.norm(rgt_e)
+    up_e = np.cross(rgt_e, fwd_e)
+    tan_h = math.tan(math.radians(37.0))
+    xs_e = (np.arange(W_e) + 0.5) / W_e * 2.0 - 1.0
+    ys_e = (np.arange(H_e) + 0.5) / H_e * 2.0 - 1.0
+    gxe, gye = np.meshgrid(xs_e * (W_e / float(H_e)) * tan_h, ys_e * tan_h)
+    edx = fwd_e[0] + rgt_e[0] * gxe + up_e[0] * gye
+    edy = fwd_e[1] + rgt_e[1] * gxe + up_e[1] * gye
+    edz = fwd_e[2] + rgt_e[2] * gxe + up_e[2] * gye
+    inv_e = 1.0 / np.maximum(np.sqrt(edx*edx + edy*edy + edz*edz), 1e-8)
+    edx, edy, edz = edx * inv_e, edy * inv_e, edz * inv_e
 
-    gal_n = np.array([0.32, 0.78, -0.54]); gal_n /= np.linalg.norm(gal_n)
-    gal_c = np.array([-0.76, 0.42, 0.49]); gal_c /= np.linalg.norm(gal_c)
-    gal_e = np.cross(gal_n, gal_c); gal_e /= np.linalg.norm(gal_e)
-    lat = edx*gal_n[0] + edy*gal_n[1] + edz*gal_n[2]
-    lon = np.arctan2(edx*gal_e[0] + edy*gal_e[1] + edz*gal_e[2],
-                     edx*gal_c[0] + edy*gal_c[1] + edz*gal_c[2])
-    gux, guy = lon * 1.45, lat * 4.2
-    nb = fbm(gux * 1.35 + 3.1, guy * 1.35 - 1.7)
-    nw = fbm(gux * 2.40 + nb * 1.4, guy * 2.40 - nb * 1.1)
-    nf = fbm(gux * 4.20 - nw * 0.9, guy * 4.20 - nb * 0.8)
-    pw = np.exp(-lat*lat * 9.5)
-    pc = np.exp(-lat*lat * 26.0)
-    bulge = np.exp(-lat*lat * 13.0 - (lon + 1.1)**2 * 1.1)
-    dust = np.clip((nw*0.7 + nf*0.3 - 0.34) / 0.38, 0, 1) * np.exp(-lat*lat * 38.0)
-    dtr = (1.0 - 0.82 * dust)[:, :, None]
+    def c_hash31(px, py, pz):
+        px, py, pz = (px * 0.1031) % 1.0, (py * 0.1030) % 1.0, (pz * 0.0973) % 1.0
+        dv = px * (py + 33.33) + py * (px + 33.33) + pz * (pz + 33.33)
+        return ((px + py + 2.0 * dv) * (pz + dv)) % 1.0
 
+    def c_noise3d(px, py, pz):
+        ix, iy, iz = np.floor(px), np.floor(py), np.floor(pz)
+        fx, fy, fz = px - ix, py - iy, pz - iz
+        ux, uy, uz = fx*fx*(3.0-2.0*fx), fy*fy*(3.0-2.0*fy), fz*fz*(3.0-2.0*fz)
+        n00 = c_hash31(ix,iy,iz)*(1-ux) + c_hash31(ix+1,iy,iz)*ux
+        n10 = c_hash31(ix,iy+1,iz)*(1-ux) + c_hash31(ix+1,iy+1,iz)*ux
+        n01 = c_hash31(ix,iy,iz+1)*(1-ux) + c_hash31(ix+1,iy,iz+1)*ux
+        n11 = c_hash31(ix,iy+1,iz+1)*(1-ux) + c_hash31(ix+1,iy+1,iz+1)*ux
+        return (n00*(1-uy) + n10*uy)*(1-uz) + (n01*(1-uy) + n11*uy)*uz
+
+    def c_fbm3d(px, py, pz, octs=3):
+        v, a = np.zeros_like(px), 0.5
+        for _ in range(octs):
+            v += a * c_noise3d(px, py, pz)
+            px, py, pz = px*2.04 + 13.7, py*2.04 + 29.3, pz*2.04 + 19.1
+            a *= 0.5
+        return v
+
+    bh = np.array([0.36, 0.34, -0.869]); bh /= np.linalg.norm(bh)
+    bh_dot = edx*bh[0] + edy*bh[1] + edz*bh[2]
+    sin_th = np.sqrt(np.maximum(1.0 - bh_dot*bh_dot, 0.0))
+    defl = (0.168**2) / (sin_th + 0.095) * np.exp(-sin_th * 4.2) * np.clip((bh_dot - 0.55) / 0.30, 0.0, 1.0)
+    tx, ty, tz = edx - bh[0]*bh_dot, edy - bh[1]*bh_dot, edz - bh[2]*bh_dot
+    tl = np.maximum(np.sqrt(tx*tx + ty*ty + tz*tz), 1e-5)
+    bdx, bdy, bdz = edx - (tx/tl)*defl, edy - (ty/tl)*defl, edz - (tz/tl)*defl
+    bi = 1.0 / np.maximum(np.sqrt(bdx*bdx + bdy*bdy + bdz*bdz), 1e-8)
+    bdx, bdy, bdz = bdx*bi, bdy*bi, bdz*bi
+
+    gal_n = np.array([0.24, 0.84, -0.49]); gal_n /= np.linalg.norm(gal_n)
+    gal_c = np.array([-0.82, 0.42, 0.39]); gal_c -= gal_n*np.dot(gal_c, gal_n); gal_c /= np.linalg.norm(gal_c)
+    gal_e = np.cross(gal_n, gal_c)
+    lat = bdx*gal_n[0] + bdy*gal_n[1] + bdz*gal_n[2]
+    cdot = bdx*gal_c[0] + bdy*gal_c[1] + bdz*gal_c[2]
+    edot = bdx*gal_e[0] + bdy*gal_e[1] + bdz*gal_e[2]
+    gx3, gy3, gz3 = cdot*2.7, edot*2.7, lat*5.0
+    nb = c_fbm3d(gx3+2.3, gy3-1.5, gz3+4.1, 3)
+    nw = c_fbm3d(gx3*1.85+nb*1.35, gy3*1.85-nb*1.15, gz3*1.85+nb*0.75, 3)
+    pw, pc = np.exp(-lat*lat*11.0), np.exp(-lat*lat*30.0)
+    bulge = np.exp(-lat*lat*14.0) * (np.maximum(cdot, 0.0) ** 2.2)
+    dust = np.clip((nw - 0.36) / 0.36, 0.0, 1.0) * np.exp(-lat*lat*34.0)
+    dtr = (1.0 - 0.88 * dust)[:, :, None]
     end_hdr = (
-        np.array([0.0022, 0.0030, 0.0080])[None, None, :]
+        np.array([0.0004, 0.0007, 0.0022])[None, None, :]
         + (
-            np.array([0.07, 0.15, 0.38])[None, None, :] * (pw * (0.45 + 0.85 * nb))[:, :, None]
-            + np.array([0.98, 0.64, 0.32])[None, None, :] * (bulge * (0.55 + 0.75 * nw) * 0.65)[:, :, None]
-            + np.array([0.34, 0.42, 0.68])[None, None, :] * (pc * nf * 0.55)[:, :, None]
-            + np.array([0.70, 0.12, 0.34])[None, None, :] * (np.clip((nb*0.55 + nf*0.45 - 0.50)/0.32, 0, 1) * pw * 0.45)[:, :, None]
-            + np.array([0.06, 0.44, 0.60])[None, None, :] * (np.clip((fbm(gux*2.1+11.3, guy*2.1+5.7) - 0.54)/0.30, 0, 1) * pw * 0.38)[:, :, None]
+            np.array([0.024, 0.060, 0.24])[None, None, :] * (pw * (nb ** 1.5) * 1.35)[:, :, None]
+            + np.array([0.16, 0.28, 0.68])[None, None, :] * (pc * (0.35 + 0.95*nw) * 0.58)[:, :, None]
+            + np.array([1.05, 0.62, 0.30])[None, None, :] * (bulge * (0.45 + 0.80*nw) * 0.48)[:, :, None]
         ) * dtr
     )
-
-    # Crisp Planck starfield
     rng_s = np.random.default_rng(42)
-    star_u = rng_s.random((H_e, W_e))
-    star_t = rng_s.random((H_e, W_e))
-    s_mask = (star_u > (0.994 - 0.012 * pw)).astype(float)
-    s_mag = np.where(s_mask > 0, ((star_u - 0.980) / 0.020) ** 2, 0.0)
-    s_col = np.stack([
-        np.where(star_t < 0.5, 1.0, 1.0 - 0.35 * (star_t - 0.5) * 2.0),
-        np.where(star_t < 0.5, 0.65 + 0.32 * star_t * 2.0, 0.97 - 0.18 * (star_t - 0.5) * 2.0),
-        np.where(star_t < 0.5, 0.38 + 0.58 * star_t * 2.0, 1.0),
+    su_r, st_r = rng_s.random((H_e, W_e)), rng_s.random((H_e, W_e))
+    sm = (su_r > (0.993 - 0.011 * pw)).astype(float)
+    smag = np.where(sm > 0, ((su_r - 0.978) / 0.022) ** 2, 0.0)
+    scol = np.stack([
+        np.where(st_r < 0.5, 1.0, 1.0 - 0.35 * (st_r - 0.5) * 2.0),
+        np.where(st_r < 0.5, 0.65 + 0.32 * st_r * 2.0, 0.97 - 0.18 * (st_r - 0.5) * 2.0),
+        np.where(st_r < 0.5, 0.38 + 0.58 * st_r * 2.0, 1.0),
     ], axis=-1)
-    end_hdr = end_hdr + s_col * (s_mag[:, :, None] * 1.45)
+    end_hdr = end_hdr + scol * (smag[:, :, None] * 1.65)
 
-    # Andromeda M31 Spiral Galaxy on upper-left
-    m31 = np.array([-0.52, 0.56, -0.64]); m31 /= np.linalg.norm(m31)
-    mU = np.cross(np.array([0.0, 1.0, 0.0]), m31); mU /= np.linalg.norm(mU)
-    mV = np.cross(m31, mU)
-    mpx = edx*mU[0] + edy*mU[1] + edz*mU[2]
-    mpy = edx*mV[0] + edy*mV[1] + edz*mV[2]
-    mrx = mpx*0.88 - mpy*0.47
-    mry = (mpx*0.47 + mpy*0.88) * 2.85
-    mrad = np.sqrt(mrx*mrx + mry*mry)
-    mang = np.arctan2(mry, mrx)
-    msp = 0.5 + 0.5 * np.cos(2.0 * mang - 6.8 * np.log(mrad + 0.012))
-    mdisk = np.exp(-mrad * 14.5) * (0.35 + 0.65 * msp * msp)
-    mnuc = np.exp(-mrad * mrad * 1800.0)
-    end_hdr = end_hdr + np.array([0.40, 0.55, 0.98])[None, None, :] * (mdisk * 0.55)[:, :, None] + np.array([1.2, 0.9, 0.6])[None, None, :] * (mnuc * 1.25)[:, :, None]
+    # Exact 3D Schwarzschild Null Geodesic Gargantua Black Hole (34 Verlet steps)
+    bh_m = bh_dot > 0.72
+    if np.any(bh_m):
+        bU0 = np.cross(np.array([0.0, 1.0, 0.0]), bh); bU0 /= np.linalg.norm(bU0)
+        bV0 = np.cross(bh, bU0)
+        bU = bU0*0.965926 - bV0*0.258819
+        bV = bU0*0.258819 + bV0*0.965926
+        dX = edx[bh_m]*bU[0] + edy[bh_m]*bU[1] + edz[bh_m]*bU[2]
+        dY = edx[bh_m]*bV[0] + edy[bh_m]*bV[1] + edz[bh_m]*bV[2]
+        dZ = bh_dot[bh_m]
+        sinA, cosA = 0.132256, 0.991215
+        px = np.zeros_like(dX); py = np.full_like(dX, 15.2*sinA); pz = np.full_like(dX, -15.2*cosA)
+        vx, vy, vz = dX, dY*cosA - dZ*sinA, dY*sinA + dZ*cosA
+        vi = 1.0 / np.maximum(np.sqrt(vx*vx + vy*vy + vz*vz), 1e-8)
+        vx, vy, vz = vx*vi, vy*vi, vz*vi
+        h2 = (py*vz - pz*vy)**2 + (pz*vx - px*vz)**2 + (px*vy - py*vx)**2
+        r2 = px*px + py*py + pz*pz; r = np.sqrt(r2)
+        axg, ayg, azg = -1.5*h2*px/(r2*r2*r), -1.5*h2*py/(r2*r2*r), -1.5*h2*pz/(r2*r2*r)
+        ar, ag, ab_c = np.zeros_like(dX), np.zeros_like(dX), np.zeros_like(dX)
+        tr_b, ftr_b = np.ones_like(dX), np.ones_like(dX)
+        min_r = r.copy(); alive = np.ones_like(dX, dtype=bool)
+        for _ in range(36):
+            if not np.any(alive): break
+            ii = np.flatnonzero(alive)
+            p_x, p_y, p_z = px[ii], py[ii], pz[ii]
+            v_x, v_y, v_z = vx[ii], vy[ii], vz[ii]
+            a_x, a_y, a_z = axg[ii], ayg[ii], azg[ii]
+            rc_i = np.sqrt(p_x*p_x + p_y*p_y + p_z*p_z)
+            dt = np.clip(0.13*(rc_i - 0.62), 0.075, 1.05)
+            nx = p_x + v_x*dt + 0.5*a_x*dt*dt
+            ny = p_y + v_y*dt + 0.5*a_y*dt*dt
+            nz = p_z + v_z*dt + 0.5*a_z*dt*dt
+            nr2 = nx*nx + ny*ny + nz*nz; nr = np.sqrt(nr2)
+            min_r[ii] = np.minimum(min_r[ii], nr)
+            cr = (p_y * ny <= 0.0) & (tr_b[ii] > 0.008)
+            if np.any(cr):
+                fr = np.abs(p_y[cr]) / (np.abs(p_y[cr]) + np.abs(ny[cr]) + 1e-6)
+                sx = p_x[cr] + (nx[cr] - p_x[cr])*fr
+                sz = p_z[cr] + (nz[cr] - p_z[cr])*fr
+                rh = np.sqrt(sx*sx + sz*sz)
+                ind = (rh > 1.88) & (rh < 10.6)
+                if np.any(ind):
+                    rhd, sxd, szd = rh[ind], sx[ind], sz[ind]
+                    tw1 = 4.8*np.log(rhd) - 4.8/(rhd**1.25)
+                    n1 = fbm((sxd*np.cos(tw1)-szd*np.sin(tw1))*0.5, (sxd*np.sin(tw1)+szd*np.cos(tw1))*0.5)
+                    rm = rhd + (n1 - 0.5)*1.35
+                    pl = (0.28 + 0.72*(0.5+0.5*np.sin(rm*3.6 + n1*2.8))) * (0.25 + 1.35*n1*n1)
+                    radp = np.clip((rhd-1.92)/0.73,0,1) * (np.clip((10.6-rhd)/6.4,0,1)**1.5) * ((2.6/rhd)**1.15)
+                    vom = np.minimum(np.sqrt(0.56/np.maximum(rhd-0.95, 0.35)), 0.58)
+                    vl = np.maximum(np.sqrt(v_x[cr][ind]**2 + v_y[cr][ind]**2 + v_z[cr][ind]**2), 1e-6)
+                    dop = (szd/rhd*vom)*(-v_x[cr][ind]/vl) + (-sxd/rhd*vom)*(-v_z[cr][ind]/vl)
+                    beam = np.clip(1.0/(1.0 - dop*0.76), 0.44, 2.18)
+                    gred = np.sqrt(np.clip(1.0 - 1.0/rhd, 0.08, 1.0))
+                    tmp = (1.62*((2.5/rhd)**0.64)*(0.5+0.6*pl))*(beam**0.62)*gred
+                    w1 = np.clip(tmp/0.55,0,1); w2 = np.clip((tmp-0.55)/0.72,0,1); w3 = np.clip((tmp-1.27)/0.90,0,1)
+                    cr_c = (0.36*(1-w1)+1.10*w1)*(1-w2)+1.36*w2; cr_c = cr_c*(1-w3)+1.28*w3
+                    cg_c = (0.035*(1-w1)+0.30*w1)*(1-w2)+0.88*w2; cg_c = cg_c*(1-w3)+1.28*w3
+                    cb_c = (0.015*(1-w1)+0.04*w1)*(1-w2)+0.44*w2; cb_c = cb_c*(1-w3)+1.42*w3
+                    pds = np.minimum((0.36 + 0.03*np.maximum(rhd-2.0,0.0))/np.maximum(np.abs(v_y[cr][ind]),0.16), 1.85)
+                    es = radp*(0.20 + 1.25*pl)*1.90*(beam**1.48)*gred*pds*1.10
+                    isf = szd < 0.0
+                    tau = np.clip(radp*(1.15+1.3*(1-0.5*n1)+0.9*pl)*pds*np.where(isf,1.40,0.85), 0.0, 4.5)
+                    att = 1.0 - (1.0 - np.exp(-tau))*0.96
+                    hi = ii[cr][ind]
+                    ar[hi] += tr_b[hi]*cr_c*es; ag[hi] += tr_b[hi]*cg_c*es; ab_c[hi] += tr_b[hi]*cb_c*es
+                    tr_b[hi] *= att
+                    if np.any(isf): ftr_b[hi[isf]] *= att[isf]
+            ni5 = 1.0 / np.maximum(nr2*nr2*nr, 1e-6)
+            nax, nay, naz = -1.5*h2[ii]*nx*ni5, -1.5*h2[ii]*ny*ni5, -1.5*h2[ii]*nz*ni5
+            nvx, nvy, nvz = v_x + 0.5*(a_x+nax)*dt, v_y + 0.5*(a_y+nay)*dt, v_z + 0.5*(a_z+naz)*dt
+            px[ii], py[ii], pz[ii] = nx, ny, nz; vx[ii], vy[ii], vz[ii] = nvx, nvy, nvz; axg[ii], ayg[ii], azg[ii] = nax, nay, naz
+            cap = nr < 1.08; esc = (nr > 18.5) & ((nx*nvx + ny*nvy + nz*nvz) > 0.0)
+            if np.any(cap): tr_b[ii[cap]] = 0.0; alive[ii[cap]] = False
+            if np.any(esc): alive[ii[esc]] = False
+        pr = np.exp(-((min_r - 1.54)/0.072)**2) * np.clip((min_r - 1.06)/0.18, 0, 1) * ftr_b * np.clip(1.08 - dX*2.1, 0.5, 1.7)
+        ar += pr*1.75; ag += pr*1.24; ab_c += pr*0.74
+        cf = np.clip((bh_dot[bh_m] - 0.72)/0.08, 0, 1)
+        end_hdr[bh_m] *= (1.0 - (1.0 - tr_b)*cf)[:, None]
+        end_hdr[bh_m, 0] += ar*cf; end_hdr[bh_m, 1] += ag*cf; end_hdr[bh_m, 2] += ab_c*cf
 
-    # Gargantua Relativistic Black Hole + Lensed Accretion Disk + Doppler Beaming on upper-right
-    bh = np.array([0.38, 0.48, -0.79]); bh /= np.linalg.norm(bh)
-    bU0 = np.cross(np.array([0.0, 1.0, 0.0]), bh); bU0 /= np.linalg.norm(bU0)
-    bV0 = np.cross(bh, bU0)
-    bp0x = edx*bU0[0] + edy*bU0[1] + edz*bU0[2]
-    bp0y = edx*bV0[0] + edy*bV0[1] + edz*bV0[2]
-    bpx = bp0x*0.961 - bp0y*0.276
-    bpy = bp0x*0.276 + bp0y*0.961
-    br = np.sqrt(bpx*bpx + bpy*bpy)
-    rH = 0.075
-    eclipse = np.clip((br - rH*0.95) / (rH*0.09), 0.0, 1.0)[:, :, None]
-    end_hdr = end_hdr * eclipse
-    bang = np.arctan2(bpy, bpx)
-    plasma = (0.58 + 0.42*np.sin(bang*3.0 - np.log(br + 0.02)*14.0)) * (0.62 + 0.38*np.cos(bang*5.0 + np.log(br + 0.02)*20.0))
-    doppler = np.clip(0.68 - bpx / (rH * 3.4), 0.26, 1.32)
-    t_d = np.clip(doppler * 0.85, 0.0, 1.0)[:, :, None]
-    dhue = np.array([0.95, 0.26, 0.06])[None, None, :] * (1.0 - t_d) + np.array([1.32, 1.04, 0.72])[None, None, :] * t_d
-    blue_s = np.clip((doppler - 1.02) / 0.30, 0.0, 1.0)[:, :, None] * 0.40
-    dhue = dhue * (1.0 - blue_s) + np.array([0.88, 0.96, 1.35])[None, None, :] * blue_s
-    eqR = np.sqrt((bpx*0.42)**2 + (bpy*3.10)**2)
-    rTaper = np.exp(-((br / (rH * 2.55)) ** 2.2))
-    eqM = np.exp(-((eqR - rH*0.72) / (rH*0.38))**2) * rTaper
-    front = eqM * np.clip((-bpy + rH*0.30)/(rH*0.44), 0, 1)
-    lensR = np.exp(-((br - rH*1.22) / (rH*0.26))**2) * np.clip((br - rH*0.96)/(rH*0.11), 0, 1)
-    lensA = lensR * (0.42 + 0.58 * np.abs(bpy / np.maximum(br, 1e-4)))
-    pring = np.exp(-((br - rH*1.06) / (rH*0.095))**2)
-    jw = np.exp(-(bpx / (rH*0.22 + np.abs(bpy)*0.11))**2)
-    jl = np.exp(-np.abs(bpy) / (rH*3.6)) * np.clip((np.abs(bpy) - rH*0.95)/(rH*0.50), 0, 1)
-    end_hdr = (
-        end_hdr
-        + dhue * ((front*1.55 + lensA*0.98) * (0.48 + 0.85*plasma) * doppler)[:, :, None]
-        + np.array([1.45, 1.22, 0.88])[None, None, :] * (pring * (0.75 + 0.55*doppler))[:, :, None]
-        + np.array([0.30, 0.55, 1.15])[None, None, :] * (jw * jl * 0.28)[:, :, None]
-    )
+    # Sweeping Celestial Orbital Ring + Volumetric End Space Clouds
+    ring_n = np.array([-0.34, 0.84, 0.42]); ring_n /= np.linalg.norm(ring_n)
+    ring_u = np.cross(np.array([0.0, 1.0, 0.0]), ring_n); ring_u /= np.linalg.norm(ring_u)
+    ring_v = np.cross(ring_n, ring_u)
+    den_r = edx*ring_n[0] + edy*ring_n[1] + edz*ring_n[2]
+    tr_r = 0.65 / np.where(np.abs(den_r) > 0.03, den_r, 0.03)
+    vr = (tr_r > 0.0) & (tr_r < 18.0) & (edy > -0.04)
+    if np.any(vr):
+        rr_u = (edx[vr]*tr_r[vr])*ring_u[0] + (edy[vr]*tr_r[vr])*ring_u[1] + (edz[vr]*tr_r[vr])*ring_u[2] - 0.55
+        rr_v = (edx[vr]*tr_r[vr])*ring_v[0] + (edy[vr]*tr_r[vr])*ring_v[1] + (edz[vr]*tr_r[vr])*ring_v[2] + 0.35
+        rr = np.sqrt(rr_u*rr_u + rr_v*rr_v)
+        bnd = np.clip((rr-1.85)/0.4,0,1) * np.clip((3.55-rr)/0.6,0,1)
+        cas = 1.0 - 0.85*np.exp(-((rr-2.68)/0.055)**2)
+        fic = 0.5 + 0.5*(0.5+0.5*np.sin(rr*24.0))*(0.62+0.38*np.cos(rr*64.0))
+        bhc = np.maximum(bh_dot[vr], 0.0)
+        bhcl = np.clip((0.92 - bh_dot[vr])/0.10, 0, 1)
+        rhue = np.array([0.32,0.46,0.90])*(1.0-0.5*bhc)[:,None] + np.array([1.08,0.72,0.38])*(0.5*bhc)[:,None]
+        end_hdr[vr] += rhue * (bnd * cas * fic * (0.35 + 0.75*bhc) * bhcl * 0.24)[:, None]
+
     # ACES Filmic + sRGB
-    xe = np.maximum(end_hdr, 0.0) * 0.95
+    xe = np.maximum(end_hdr, 0.0) * 0.90
     me = np.clip((xe * (2.51 * xe + 0.03)) / (xe * (2.43 * xe + 0.59) + 0.14), 0.0, 1.0)
     img_end = np.clip(1.128 * np.sqrt(me) - 0.128 * np.sqrt(np.sqrt(me)), 0.0, 1.0)
     axC.imshow(img_end, origin="lower")
     axC.set_xticks([]); axC.set_yticks([])
     for sp in axC.spines.values(): sp.set_edgecolor(ACCENT_GOLD); sp.set_linewidth(1.3)
-    axC.set_title("C. The End: Milky Way + Gargantua Black Hole + M31 + Planck Stars", color=TEXT_MAIN, fontsize=9.5, fontweight="bold", pad=6)
+    axC.set_title("C. The End (v4.0): 3D Geodesic Gargantua + Lensed Milky Way + Ring", color=TEXT_MAIN, fontsize=9.3, fontweight="bold", pad=6)
 
     # --- Panel D: Multi-Dimension Pipeline Cost Savings ---
     axD = fig.add_subplot(gs[1, 1])
     axD.set_facecolor(PANEL_BG)
-    dims = ["Overworld\n(22 Programs)", "The Nether\n(21 Programs)", "The End\n(21 Programs)"]
+    dims = ["Overworld\n(24 Programs)", "The Nether\n(23 Programs)", "The End\n(23 Programs)"]
     x_idx = np.arange(len(dims))
     w_bar = 0.34
-    fbo_mb = [56.5, 48.5, 48.5]
+    fbo_mb = [59.1, 51.1, 51.1]
     shadow_draw = [100.0, 0.0, 0.0]
     b1 = axD.bar(x_idx - w_bar/2, fbo_mb, width=w_bar, color=ACCENT_CYAN, edgecolor=BG_DARK, label="1080p FBO + Shadow Traffic (MB/frame)")
     b2 = axD.bar(x_idx + w_bar/2, shadow_draw, width=w_bar, color=ACCENT_GOLD, edgecolor=BG_DARK, label="Celestial Shadow Pass Load (% of Overworld)")
