@@ -116,7 +116,7 @@ void main() {
             if (prevUV.x > 0.004 && prevUV.x < 0.996 && prevUV.y > 0.004 && prevUV.y < 0.996) {
                 vec4 histDC = texture2D(colortex4, prevUV);
                 float histDist = histDC.a * 64.0;
-                if (histDC.a < 0.995 && abs(histDist - currDist) < max(0.35, currDist * 0.08)) {
+                if (histDC.a < 0.995 && abs(histDist - currDist) < max(0.65, currDist * 0.14)) {
                     prevG0 = max(histDC.rgb, vec3(0.0));
                     vec4 histSH = texture2D(colortex5, prevUV);
                     prevL1 = histSH.rgb;

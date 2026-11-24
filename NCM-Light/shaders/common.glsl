@@ -454,14 +454,22 @@ vec3 surfaceShadowColored(vec3 playerPos, vec3 worldNormal, bool isFoliage, out 
 
 #if COLORED_SHADOWS
     float zAll = texture2D(shadowtex0, suv).r;
-    if (zAll < sampleZ) {
-        vec4 sCol = texture2D(shadowcolor0, suv);
-        if (sCol.a > 0.96) return vec3(0.0);
-        vec3 glassLin = srgbToLinear(sCol.rgb);
-        float gLum = dot(glassLin, vec3(0.2126, 0.7152, 0.0722));
-        vec3 vivid = clamp(mix(vec3(gLum), glassLin, 1.35) * 1.45, vec3(0.0), vec3(1.2));
-        vec3 transTint = mix(vec3(1.0), vivid * (1.0 - 0.45 * sCol.a), clamp(sCol.a * 1.35, 0.0, 0.96));
-        return mix(transTint, vec3(1.0), edgeFade) * opaqueLit;
+    float zOpaqueCenter = min(min(z00, z10), min(z01, z11));
+    /* Only project stained-glass RGB tint when a real translucent caster sits strictly
+       in front of the opaque shadow map (eliminates colored speckles along normal shadow edges!) */
+    if (zAll < sampleZ && zAll < zOpaqueCenter - 0.0005) {
+        vec4 s00 = texture2D(shadowcolor0, uv00);
+        vec4 s10 = texture2D(shadowcolor0, uv00 + vec2(invRes, 0.0));
+        vec4 s01 = texture2D(shadowcolor0, uv00 + vec2(0.0, invRes));
+        vec4 s11 = texture2D(shadowcolor0, uv00 + vec2(invRes, invRes));
+        vec4 sCol = mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
+        if (sCol.a > 0.05 && sCol.a < 0.94) {
+            vec3 glassLin = srgbToLinear(sCol.rgb);
+            float gLum = dot(glassLin, vec3(0.2126, 0.7152, 0.0722));
+            vec3 vivid = clamp(mix(vec3(gLum), glassLin, 1.30) * 1.40, vec3(0.0), vec3(1.15));
+            vec3 transTint = mix(vec3(1.0), vivid * (1.0 - 0.35 * sCol.a), clamp(sCol.a * 1.45, 0.0, 0.94));
+            return mix(transTint, vec3(1.0), edgeFade) * opaqueLit;
+        }
     }
 #endif
 
@@ -643,9 +651,9 @@ vec3 evaluatePathVertexRadiance(vec2 hitUV, vec3 hitViewPos) {
     vec3 sunIrrad = directCelestialIrradiance() * directLightWeatherFade();
     vec3 skyIrrad = skyAmbientIrradiance();
 
-    vec3 directBounce = hitAlbedo * sunIrrad * (1.85 * sunNEE * hitSky);
-    vec3 skyBounce = hitAlbedo * skyIrrad * (0.42 * hitSky);
-    vec3 torchBounce = hitAlbedo * vec3(1.0, 0.66, 0.34) * (hitBlock * hitBlock * 4.0);
+    vec3 directBounce = hitAlbedo * sunIrrad * (1.55 * sunNEE * hitSky);
+    vec3 skyBounce = hitAlbedo * skyIrrad * (0.38 * hitSky);
+    vec3 torchBounce = hitAlbedo * vec3(1.0, 0.66, 0.34) * (hitBlock * hitBlock * 3.2);
 
     vec3 multiBounce = vec3(0.0);
 #if PT_MULTI_BOUNCE
@@ -653,13 +661,13 @@ vec3 evaluatePathVertexRadiance(vec2 hitUV, vec3 hitViewPos) {
     if (prevHitUV.x > 0.004 && prevHitUV.x < 0.996 && prevHitUV.y > 0.004 && prevHitUV.y < 0.996) {
         vec4 prevDC = texture2D(colortex4, prevHitUV);
         if (prevDC.a < 0.995) {
-            /* Neumann multi-bounce feedback with 0.55 spectral-radius cap */
-            multiBounce = hitAlbedo * min(max(prevDC.rgb, vec3(0.0)), vec3(3.5)) * 0.55;
+            /* Neumann multi-bounce feedback with 0.50 spectral-radius cap */
+            multiBounce = hitAlbedo * min(max(prevDC.rgb, vec3(0.0)), vec3(2.4)) * 0.50;
         }
     }
 #endif
 
-    return min(directBounce + skyBounce + torchBounce + multiBounce, vec3(8.0));
+    return min(directBounce + skyBounce + torchBounce + multiBounce, vec3(4.2));
 }
 
 void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 worldNormal,
@@ -751,12 +759,20 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
     vec3 kaczmarzDir = vec3(0.0);
     float resYSum = 0.0;
 
-    for (int s = 0; s < PT_SPP; s++) {
-        float sF = float(s);
-        /* 3 independent R3 plastic-constant coordinates (zero branch-sampling correlation!) */
-        float u1 = fract(baseN1 + fMod * 0.81917251 + (sF + 0.5) / sppF);
+    /* Antithetic Hemisphere Pair (2 opposing rays per PT_SPP at 1/4 res = 0.125 rays/px!):
+       Always probes both opposite sides of the normal on every frame -> kills colored speckles! */
+    int totalRays = PT_SPP * 2;
+    float totalRaysF = float(totalRays);
+
+    for (int s = 0; s < PT_SPP * 2; s++) {
+        int pairIdx = s / 2;
+        bool isAnti = ((s - pairIdx * 2) == 1);
+        float sF = float(pairIdx);
+        /* 3 independent R3 plastic-constant coordinates + exact antithetic opposing mate */
+        float u1 = fract(baseN1 + fMod * 0.81917251 + (sF + 0.5) / sppF + (isAnti ? 0.5 : 0.0));
         float u2 = fract(baseN2 + fMod * 0.67104361 + sF * 0.38196601);
-        float uG = fract(baseN3 + fMod * 0.54970048 + sF * 0.75487767);
+        if (isAnti) u2 = 1.0 - u2;
+        float uG = fract(baseN3 + fMod * 0.54970048 + sF * 0.75487767 + (isAnti ? 0.5 : 0.0));
 
         vec3 rayDir;
         if (canGuide && uG < pGuide) {
@@ -766,14 +782,13 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
             rayDir = normalize((g1 * cos(phiG) + g2 * sin(phiG)) * sinG + muView * cosG);
         } else {
             float phi = 6.2831853 * u1;
-            float cosTheta = sqrt(max(1e-4, u2));
+            float cosTheta = sqrt(max(0.04, u2));
             float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
             rayDir = (b1 * cos(phi) + b2 * sin(phi)) * sinTheta + viewNormal * cosTheta;
         }
 
         float cosN = dot(rayDir, viewNormal);
         if (cosN <= 0.0) {
-            /* Exact balance-heuristic MIS: guided ray below horizon contributes 0 (strictly unbiased!) */
             continue;
         }
 
@@ -782,14 +797,14 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
             float pCos = cosN * (1.0 / PI);
             float cosM = max(dot(rayDir, muView), 0.0);
             float pLobe = (alphaG + 1.0) * (0.5 / PI) * pow(cosM, alphaG);
-            wIS = pCos / ((1.0 - pGuide) * pCos + pGuide * pLobe);
+            wIS = min(pCos / max((1.0 - pGuide) * pCos + pGuide * pLobe, 1e-4), 1.85);
         }
 
         float dirOcc = 0.0;
         vec2 hitUV = vec2(-1.0);
         vec3 hitPos = vec3(0.0);
         float hitWeight = 0.0;
-        float jitter = 0.70 + 0.50 * u2;
+        float jitter = 0.75 + 0.45 * u2;
 
         for (int m = 0; m < 4; m++) {
             vec3 pStep = startPos + rayDir * (stepR[m] * jitter);
@@ -820,24 +835,22 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
             sampRGB = skyFill * (0.35 + 0.65 * upMask) * (0.25 + 0.75 * skyFade);
         }
 
-        /* Karis firefly compression + distance attenuation */
+        /* Strong Karis firefly suppression prevents colored GI speckles on bright emissives */
         float rawLuma = dot(sampRGB, vec3(0.2126, 0.7152, 0.0722));
-        sampRGB = (sampRGB / (1.0 + rawLuma * 0.08)) * distAtten;
+        sampRGB = (sampRGB / (1.0 + rawLuma * 0.28)) * distAtten;
         float sampY = dot(sampRGB, vec3(0.2126, 0.7152, 0.0722));
 
         occSum += dirOcc;
         rawRGB += wIS * sampRGB;
 
         if (hasHistory) {
-            /* Exact Orthogonal Hemisphere-Centered Key: d = w - (2/3)*N  => E_cos[d] = 0!
-               Exact Unbiased Two-Level Control Variate Residual: NO max(0,.) clamp on pred! */
             vec3 dKey = worldRay - worldNormal * 0.666667;
             float l1DotD = dot(prevL1, dKey);
-            vec3 predRGB = prevG0 * (1.0 + l1DotD / prevY0);
+            vec3 predRGB = prevG0 * (1.0 + clamp(l1DotD / prevY0, -0.85, 1.25));
             float predY = prevY0 + l1DotD;
 
-            vec3 rCV_rgb = wIS * (sampRGB - predRGB);
-            float rCV_y  = wIS * (sampY - predY);
+            vec3 rCV_rgb = clamp(wIS * (sampRGB - predRGB), vec3(-1.5), vec3(1.5));
+            float rCV_y  = clamp(wIS * (sampY - predY), -1.5, 1.5);
             float dNorm2 = dot(dKey, dKey) + 0.25;
 
             resRGB += rCV_rgb;
@@ -846,7 +859,7 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
         }
     }
 
-    float invSpp = 1.0 / sppF;
+    float invSpp = 1.0 / totalRaysF;
     outAO = 1.0 - clamp((occSum * invSpp) * distAtten * 0.88, 0.0, 0.68);
     rawRGB *= invSpp;
 
@@ -857,19 +870,19 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
 
         /* Martingale-Safe Decoupled Erase & Write Gates (Gated DeltaNet-2) */
         float s2 = prevSurprise * prevSurprise;
-        float eraseGate = 0.015 + 0.45 * s2;
-        float writeGate = 0.10  + 0.48 * s2;
-        float dirWrite  = 0.18  + 0.42 * prevSurprise;
+        float eraseGate = 0.015 + 0.40 * s2;
+        float writeGate = 0.08  + 0.40 * s2;
+        float dirWrite  = 0.14  + 0.36 * prevSurprise;
 
         outG0 = max(vec3(0.0), prevG0 + writeGate * resRGB);
         outL1 = (1.0 - eraseGate) * prevL1 + dirWrite * kaczmarzDir;
 
         float normRes = clamp(resYSum / (0.20 + 0.80 * prevY0), -1.5, 1.5);
-        outSignedInnov = clamp(0.72 * prevSignedInnov + 0.28 * normRes, -1.5, 1.5);
+        outSignedInnov = clamp(0.75 * prevSignedInnov + 0.25 * normRes, -1.5, 1.5);
     } else {
         outG0 = max(vec3(0.0), rawRGB);
         outL1 = vec3(0.0);
-        outSignedInnov = 1.0;
+        outSignedInnov = 0.5;
     }
 
     /* Physical SH L1 boundedness projection: |L1| <= 1.40 * Y0 */
@@ -1218,23 +1231,24 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
 #endif
 
     /* Fade out screen-space hits when ray points back toward/behind the camera (prevents back-face false hits!) */
-    float towardCamFade = 1.0 - smoothstep(0.02, 0.45, R.z);
-    if (fresnel < 0.018 || towardCamFade < 0.02) {
+    float towardCamFade = 1.0 - smoothstep(0.02, 0.40, R.z);
+    if (fresnel < 0.018 || towardCamFade < 0.02 || dot(R, viewNormal) < 0.02) {
         return vec4(skyRefl + specGlint, fresnel);
     }
 
-    float maxDist = min((far > 1.0) ? far : 48.0, 48.0);
-    vec3 startPos = viewPos + viewNormal * max(0.08, -viewPos.z * 0.006);
+    float maxDist = min((far > 1.0) ? far : 34.0, 34.0);
+    vec3 startPos = viewPos + viewNormal * max(0.08, -viewPos.z * 0.008);
 
     float tPrev = 0.0;
     float tHit = 0.0;
+    float prevPen = -1.0;
     vec2 hitUV = vec2(0.5);
     bool hit = false;
 
-    /* 6 quadratic steps marching strictly against depthtex2 (opaque world ONLY -> ZERO hand/sword ghosting!) */
-    for (int i = 0; i < 6; i++) {
-        float f = float(i + 1) * (1.0 / 6.0);
-        float tCurr = 0.28 + (maxDist - 0.28) * (f * f);
+    /* 8 geometric steps (0.35m -> 34m) strictly against depthtex2 (opaque world ONLY):
+       Requires true front-to-back crossing + rejects foreground blocks closer than the mirror! */
+    float tCurr = 0.35;
+    for (int i = 0; i < 8; i++) {
         vec3 probe = startPos + R * tCurr;
         if (probe.z >= -near) break;
 
@@ -1246,15 +1260,22 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
         float sd = texture2D(depthtex2, proj.xy).r;
         if (sd < 0.9999) {
             float vz = fastViewZ(sd);
-            float pen = vz - probe.z;
-            if (pen > 0.02 && pen < 0.55 + 0.14 * tCurr) {
-                tHit = tCurr;
-                hitUV = proj.xy;
-                hit = true;
-                break;
+            /* If ray travels away from camera (R.z < 0), it CANNOT hit a foreground surface closer than viewPos! */
+            if (!(R.z < 0.0 && vz > viewPos.z + 0.12)) {
+                float pen = vz - probe.z;
+                if (pen > 0.01 && prevPen <= 0.05 && pen < 0.32 + 0.09 * tCurr) {
+                    tHit = tCurr;
+                    hitUV = proj.xy;
+                    hit = true;
+                    break;
+                }
+                prevPen = pen;
             }
+        } else {
+            prevPen = -1.0;
         }
         tPrev = tCurr;
+        tCurr = min(tCurr * 1.92, maxDist);
     }
 
     if (!hit) {
@@ -1270,7 +1291,7 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
         if (mproj.z >= 0.0 && mproj.x > 0.0 && mproj.x < 1.0 && mproj.y > 0.0 && mproj.y < 1.0) {
             float md = texture2D(depthtex2, mproj.xy).r;
             float mz = (md < 0.9999) ? fastViewZ(md) : -1e6;
-            if (mz - midPos.z > 0.0) {
+            if (mz - midPos.z > 0.0 && !(R.z < 0.0 && mz > viewPos.z + 0.12)) {
                 tHi = tMid;
                 hitUV = mproj.xy;
             } else {
@@ -1279,19 +1300,26 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
         }
     }
 
-    /* Reject hit if the first-person hand/sword covers colortex0 at hitUV! */
+    /* Reject hit if first-person hand covers colortex0, OR hit surface is facing away (back-face bleed) */
     float dHandCheck = texture2D(depthtex1, hitUV).r;
     float dWorldCheck = texture2D(depthtex2, hitUV).r;
     if (dWorldCheck >= 0.9999 || dHandCheck < dWorldCheck - 1e-5) {
         return vec4(skyRefl + specGlint, fresnel);
+    }
+    vec4 hitSurf = texture2D(colortex3, hitUV);
+    if (hitSurf.w >= 0.125) {
+        vec3 hitWorldN = octDecodeNormal(hitSurf.xy);
+        if (dot(hitWorldN, worldR) > 0.35) {
+            return vec4(skyRefl + specGlint, fresnel);
+        }
     }
 
     float border = min(min(hitUV.x, 1.0 - hitUV.x), min(hitUV.y, 1.0 - hitUV.y));
     float edgeFade = smoothstep(0.0, 0.10, border) * towardCamFade;
     vec3 hitCol;
 #if SPECTRAL_DISPERSION
-    if (dispersionAmt > 0.0005) {
-        vec2 dispOff = vec2(dispersionAmt * (0.4 + 0.6 * oneMinusCos), dispersionAmt * 0.35);
+    if (dispersionAmt > 0.0002) {
+        vec2 dispOff = vec2(dispersionAmt * (0.4 + 0.6 * oneMinusCos), dispersionAmt * 0.25);
         hitCol = vec3(
             texture2D(colortex0, clamp(hitUV + dispOff, 0.002, 0.998)).r,
             texture2D(colortex0, hitUV).g,

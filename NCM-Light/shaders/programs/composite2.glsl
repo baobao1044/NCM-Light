@@ -137,8 +137,15 @@ void main() {
             denoiseDeltaNCM(texcoord, viewPos.z, worldNormal, centerSurprise, estGI, estL1, estAO);
             edgeWork = max(coarse1.w, centerSurprise);
         } else {
+            /* Ultra-Fast L1-Cached 4-Tap Tent Filter on 0.25x colortex4 ONLY (0 depth/normal reads!):
+               Eliminates 4x4 colored GI noise blotches on flat walls while staying super light on UHD 620! */
+            vec2 qStep = 1.0 / max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
+            vec3 g00 = max(texture2D(colortex4, clamp(texcoord + vec2(-0.5, -0.5) * qStep, 0.002, 0.998)).rgb, vec3(0.0));
+            vec3 g10 = max(texture2D(colortex4, clamp(texcoord + vec2( 0.5, -0.5) * qStep, 0.002, 0.998)).rgb, vec3(0.0));
+            vec3 g01 = max(texture2D(colortex4, clamp(texcoord + vec2(-0.5,  0.5) * qStep, 0.002, 0.998)).rgb, vec3(0.0));
+            vec3 g11 = max(texture2D(colortex4, clamp(texcoord + vec2( 0.5,  0.5) * qStep, 0.002, 0.998)).rgb, vec3(0.0));
             estAO = clamp(coarse1.y, 0.25, 1.0);
-            estGI = max(texture2D(colortex4, texcoord).rgb, vec3(0.0));
+            estGI = 0.25 * (g00 + g10 + g01 + g11);
             estL1 = fastSH.rgb;
         }
     }
@@ -261,12 +268,10 @@ void main() {
                 specTerm = sunCol * shadowRGB * evaluateGGXSpecularRGB(worldNormal, dir, lightDir, 0.44, vec3(0.038), false);
             } else {
                 specTerm = sunCol * shadowRGB * evaluateGGXSpecularRGB(worldNormal, dir, lightDir, rough, f0RGB, isMetal);
-                if (isCrystal) {
-                    float glint = evaluateMicroSparkle(worldPos, dir, lightDir, 28.0);
-                    specTerm += sunCol * shadowRGB * evaluateThinFilmIridescence(ndotv, 7.5) * (glint * 0.85);
-                } else if (isThickSSS) {
-                    float snowGlint = evaluateMicroSparkle(worldPos, dir, lightDir, 22.0);
-                    specTerm += sunCol * shadowRGB * (snowGlint * 0.55);
+                if (isThickSSS && (-viewPos.z) < 8.0) {
+                    /* Subtle close-range snow/frost glint only (zero distant grain or colored speckles!) */
+                    float snowGlint = evaluateMicroSparkle(worldPos, dir, lightDir, 16.0) * (1.0 - smoothstep(4.0, 8.0, -viewPos.z));
+                    specTerm += sunCol * shadowRGB * (snowGlint * 0.20);
                 }
             }
         }
