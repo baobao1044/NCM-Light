@@ -68,6 +68,7 @@ void main() {
     vec4 state = texture2D(colortex2, texcoord);
 
     float d = texture2D(depthtex0, texcoord).r;
+    float dOpaque = texture2D(depthtex1, texcoord).r;
     float dNoHand = texture2D(depthtex2, texcoord).r;
 
     vec3 viewPos, camRel, dir;
@@ -76,7 +77,7 @@ void main() {
     bool noGeometry;
     levelSetup(texcoord, viewPos, camRel, dir, tHit, skyWeights, noGeometry);
 
-    bool isHand = (d < dNoHand - 1e-5);
+    bool isHand = (dOpaque < dNoHand - 1e-5);
     vec3 sceneHDR = hdrColor.rgb;
 
     /* 1. Concept Level 2 Grain-Free Shafts (8 taps, Perceptually Gated!) */
@@ -96,20 +97,21 @@ void main() {
 
     float reflWork = 0.0;
 
-    /* 2. Coherent Speckle-Free Ray-Traced Reflections + Prismatic Crystal Dispersion (UHD 620 tuned) */
+    /* 2. Coherent Speckle-Free Ray-Traced Reflections + Horizon-Wide Ocean Aurora/Sky Reflections */
 #if RT_REFLECTIONS
-    if (!noGeometry && !isHand && RT_STRENGTH > 0.001 && (-viewPos.z) < 48.0) {
+    bool isWaterSurface = (packedTrans >= 0.10 && packedTrans < 0.55);
+    if (!noGeometry && !isHand && RT_STRENGTH > 0.001 && (isWaterSurface || (-viewPos.z) < 48.0)) {
         vec3 worldPos = camRel + cameraPosition;
         float distFade = 1.0 - smoothstep(34.0, 48.0, -viewPos.z);
 
-        if (packedTrans >= 0.10 && packedTrans < 0.55) {
+        if (isWaterSurface) {
             float transSky = clamp((packedTrans - 0.15) / 0.35, 0.0, 1.0);
             vec3 geomN = reconstructGeomWorldNormal(texcoord, viewPos);
             vec3 reflN = (geomN.y > 0.85) ? waterWaveNormal(worldPos.xz) : geomN;
-            float smoothVal = clamp(0.92 * min(RT_STRENGTH, 1.25), 0.0, 0.98) * distFade;
-            vec4 refl = traceReflectionRT(viewPos, reflN, 0.035, smoothVal, max(transSky, 0.25), 0.0006);
-            sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.92));
-            reflWork = 0.80;
+            float smoothVal = clamp(0.95 * min(RT_STRENGTH, 1.25), 0.0, 0.98);
+            vec4 refl = traceReflectionRT(viewPos, reflN, 0.04, smoothVal, max(transSky, 0.35), 0.0006);
+            sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.94));
+            reflWork = 0.80 * distFade;
         } else if (packedTrans >= 0.55) {
             float transSky = clamp((packedTrans - 0.60) / 0.35, 0.0, 0.98);
             vec3 geomN = reconstructGeomWorldNormal(texcoord, viewPos);
@@ -205,7 +207,6 @@ void main() {
                 + estRays * RAYS_STRENGTH * shaftTintLinear();
     gl_FragColor = vec4(acesTonemapAndGrade(volHDR * 1.6), 1.0);
 #elif DEBUG_LEVEL == 4
-    float dOpaque = texture2D(depthtex1, texcoord).r;
     if (noGeometry) {
         gl_FragColor = vec4(0.08, 0.32, 0.95, 1.0);
     } else {

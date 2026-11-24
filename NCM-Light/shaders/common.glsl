@@ -1230,8 +1230,9 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
     }
 #endif
 
-    /* Fade out screen-space hits when ray points back toward/behind the camera (prevents back-face false hits!) */
-    float towardCamFade = 1.0 - smoothstep(0.02, 0.40, R.z);
+    /* Fade out screen-space hits when ray points back toward camera OR beyond 48m (distant ocean keeps 0-tap sky/aurora reflection!) */
+    float ssrDistFade = 1.0 - smoothstep(34.0, 48.0, -viewPos.z);
+    float towardCamFade = (1.0 - smoothstep(0.02, 0.40, R.z)) * ssrDistFade;
     if (fresnel < 0.018 || towardCamFade < 0.02 || dot(R, viewNormal) < 0.02) {
         return vec4(skyRefl + specGlint, fresnel);
     }

@@ -104,7 +104,9 @@ void main() {
     bool noGeometry;
     levelSetup(texcoord, viewPos, camRel, dir, tHit, skyWeights, noGeometry);
 
-    bool isHand = (d < dNoHand - 1e-5);
+    /* True Iris/OptiFine hand test: hand writes depthtex1 (not depthtex2);
+       water & glass write depthtex0 ONLY (depthtex1 == depthtex2)! */
+    bool isHand = (dOpaque < dNoHand - 1e-5);
     float transCode = 0.0;
     if (!isHand && d < dOpaque - 1e-5) {
         if (transTag.x > 0.60) transCode = 2.0;
