@@ -73,7 +73,7 @@ void main() {
                 /* Exact analytical Y-up normal + gentle ripple on flat water (ZERO depth-quantization bands!) */
                 vec3 reflN = isFlatWater ? waterWaveNormal(worldPos.xz) : reconstructGeomWorldNormal(texcoord, viewPos);
                 float smoothVal = clamp(0.96 * min(RT_STRENGTH, 1.25), 0.0, 0.98);
-                vec4 refl = traceReflectionRT(viewPos, reflN, 0.08, smoothVal, max(transSky, 0.35), 0.0005);
+                vec4 refl = traceReflectionRT(texcoord, viewPos, reflN, 0.08, smoothVal, max(transSky, 0.35), 0.0005);
                 sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.94));
                 reflWork = 0.80 * distFade;
             }
@@ -81,7 +81,7 @@ void main() {
             float transSky = clamp((packedTrans - 0.64) / 0.32, 0.0, 1.0);
             vec3 geomN = reconstructGeomWorldNormal(texcoord, viewPos);
             float smoothVal = clamp(0.84 * min(RT_STRENGTH, 1.25), 0.0, 0.92) * distFade;
-            vec4 refl = traceReflectionRT(viewPos, geomN, 0.075, smoothVal, max(transSky, 0.25), 0.0006);
+            vec4 refl = traceReflectionRT(texcoord, viewPos, geomN, 0.075, smoothVal, max(transSky, 0.25), 0.0006);
             sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.72));
             reflWork = 0.70;
         } else {
@@ -98,23 +98,23 @@ void main() {
 
                 if (isMetal) {
                     float smoothM = clamp(0.90 * min(RT_STRENGTH, 1.3), 0.0, 0.96) * distFade;
-                    vec4 refl = traceReflectionRT(viewPos, worldNormal, 0.68, smoothM, skyLight, 0.0);
+                    vec4 refl = traceReflectionRT(texcoord, viewPos, worldNormal, 0.68, smoothM, skyLight, 0.0);
                     float luma = max(dot(sceneHDR, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
-                    vec3 metalTint = clamp(sceneHDR / luma, vec3(0.35), vec3(1.45));
-                    vec3 tintedRefl = refl.rgb * mix(vec3(1.0), metalTint, 0.68);
-                    sceneHDR = mix(sceneHDR, tintedRefl, clamp(refl.a, 0.0, 0.88));
+                    vec3 metalTint = clamp(sceneHDR / luma, vec3(0.45), vec3(1.35));
+                    vec3 tintedRefl = refl.rgb * mix(vec3(1.0), metalTint, 0.45);
+                    sceneHDR = mix(sceneHDR, tintedRefl, clamp(refl.a, 0.0, 0.86));
                     reflWork = 0.85;
                 } else if (isCrystal) {
                     /* Subtle 1-pixel prismatic crystal dispersion + clean thin-film iridescence */
                     float smoothC = clamp(0.90 * min(RT_STRENGTH, 1.3), 0.0, 0.95) * distFade;
-                    vec4 refl = traceReflectionRT(viewPos, worldNormal, 0.14, smoothC, skyLight, 0.0012);
+                    vec4 refl = traceReflectionRT(texcoord, viewPos, worldNormal, 0.14, smoothC, skyLight, 0.0012);
                     float cosV = clamp(dot(-dir, worldNormal), 0.05, 1.0);
                     vec3 irid = evaluateThinFilmIridescence(cosV, 5.2);
                     sceneHDR = mix(sceneHDR, refl.rgb * mix(vec3(1.0), irid, 0.30), clamp(refl.a, 0.0, 0.85));
                     reflWork = 0.85;
                 } else if (isGlossy) {
                     float smoothG = clamp(0.84 * min(RT_STRENGTH, 1.3), 0.0, 0.95) * distFade;
-                    vec4 refl = traceReflectionRT(viewPos, worldNormal, 0.065, smoothG, skyLight, 0.0);
+                    vec4 refl = traceReflectionRT(texcoord, viewPos, worldNormal, 0.065, smoothG, skyLight, 0.0);
                     sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.85));
                     reflWork = 0.70;
                 } else if (rainStrength > 0.04 && worldNormal.y > 0.85 && skyLight > 0.45) {
@@ -126,7 +126,7 @@ void main() {
                                  * distFade;
                     if (puddle > 0.08) {
                         vec3 wetN = normalize(mix(worldNormal, waterWaveNormal(worldPos.xz * 1.6), 0.18));
-                        vec4 wetRefl = traceReflectionRT(viewPos, wetN, 0.025, 0.72 * puddle * min(RT_STRENGTH, 1.3), skyLight, 0.0);
+                        vec4 wetRefl = traceReflectionRT(texcoord, viewPos, wetN, 0.025, 0.72 * puddle * min(RT_STRENGTH, 1.3), skyLight, 0.0);
                         sceneHDR = mix(sceneHDR * (1.0 - 0.24 * puddle), wetRefl.rgb, clamp(wetRefl.a, 0.0, 0.62));
                         reflWork = 0.55 * puddle;
                     }

@@ -1786,7 +1786,7 @@ vec3 analyticSkyReflectionLinear(vec3 worldReflectDir) {
 #endif
 }
 
-vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
+vec4 traceReflectionRT(vec2 screenUV, vec3 viewPos, vec3 worldNormal,
                        float f0, float smoothness, float skyAccess,
                        float dispersionAmt)
 {
@@ -1799,11 +1799,16 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
     float fresnel = clamp(f0 + (1.0 - f0) * (omc2 * omc2), 0.0, 1.0) * smoothness;
 
     vec3 worldR = normalize(mat3(gbufferModelViewInverse) * R);
-    vec3 skyRefl = (skyAccess > 0.05) ? (analyticSkyReflectionLinear(worldR) * skyAccess) : vec3(0.0);
 
-    /* Sample live 1080p rendered sky from colortex0 (Gargantua Black Hole, Milky Way, Clouds, Aurora!)
-       whenever the reflected ray points toward on-screen sky pixels! */
-    if (skyAccess > 0.05 && R.z < -0.02) {
+    /* Physically directional environment fallback for off-screen / behind-camera rays:
+       1. Sky ONLY appears when reflected ray actually points UP (worldR.y > -0.02) AND has sky access
+          (eliminates blue/purple sky leaking onto vertical indoor walls!).
+       2. Horizontal / downward / indoor rays fall back to 3D Delta-NCM GI (colortex4/5) + room torch bounce! */
+    float upSkyMask = smoothstep(-0.02, 0.26, worldR.y) * skyAccess;
+    vec3 skyRefl = (upSkyMask > 0.01) ? (analyticSkyReflectionLinear(worldR) * upSkyMask) : vec3(0.0);
+
+    /* Sample live 1080p rendered sky from colortex0 (Gargantua, Milky Way, Clouds, Aurora) when pointing at sky */
+    if (upSkyMask > 0.04 && R.z < -0.02) {
         vec3 skyProj = fastProjectToScreen(viewPos + R * 220.0);
         if (skyProj.z > 0.0 && skyProj.x > 0.01 && skyProj.x < 0.99 && skyProj.y > 0.01 && skyProj.y < 0.99) {
             float dSkyCheck = texture2D(depthtex2, skyProj.xy).r;
@@ -1811,41 +1816,53 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
             if (dSkyCheck >= 0.9999 && dSkyHand >= 0.9999) {
                 float sBorder = min(min(skyProj.x, 1.0 - skyProj.x), min(skyProj.y, 1.0 - skyProj.y));
                 float sBlend = smoothstep(0.01, 0.14, sBorder);
-                vec3 liveSky = max(texture2D(colortex0, skyProj.xy).rgb, vec3(0.0)) * skyAccess;
+                vec3 liveSky = max(texture2D(colortex0, skyProj.xy).rgb, vec3(0.0)) * upSkyMask;
                 skyRefl = mix(skyRefl, liveSky, sBlend);
             }
         }
+    }
+
+    /* 3D Directional Delta-NCM Room/Terrain Fallback for off-screen horizontal/downward rays */
+    vec3 envFallback = skyRefl;
+    if (upSkyMask < 0.92) {
+        vec3 envG0 = max(texture2D(colortex4, screenUV).rgb, vec3(0.0));
+        vec3 envL1 = texture2D(colortex5, screenUV).rgb;
+        float eY0 = max(dot(envG0, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+        float dirGain = clamp(1.0 + 0.65 * (dot(envL1, worldR) / eY0), 0.35, 1.85);
+        float surfBL = texture2D(colortex3, screenUV).z;
+        vec3 localRoom = envG0 * (dirGain * 0.72) + vec3(0.55, 0.30, 0.12) * (surfBL * surfBL * 0.28);
+        envFallback = mix(localRoom, skyRefl, upSkyMask);
     }
 
     float lightValid;
     vec3 lightDirView = activeLightDirView(lightValid);
     vec3 specGlint = vec3(0.0);
 #if !defined(DIMENSION_NETHER) && !defined(DIMENSION_END)
-    if (lightValid > 0.5 && skyAccess > 0.2) {
+    if (lightValid > 0.5 && upSkyMask > 0.15) {
         float specDot = max(dot(R, lightDirView), 0.0);
         if (specDot > 0.85) {
             float s2 = specDot * specDot;
             float s8 = s2 * s2; s8 *= s8;
             float s64 = s8 * s8; s64 *= s64;
-            specGlint = directCelestialIrradiance() * (s64 * s64 * 1.35 * smoothness * skyAccess);
+            specGlint = directCelestialIrradiance() * (s64 * s64 * 1.35 * smoothness * upSkyMask);
         }
     }
 #endif
 
     /* Fade out screen-space hits when ray points strongly back toward camera OR beyond 48m */
     float ssrDistFade = 1.0 - smoothstep(34.0, 48.0, -viewPos.z);
-    float towardCamFade = (1.0 - smoothstep(0.18, 0.65, R.z)) * ssrDistFade;
+    float towardCamFade = (1.0 - smoothstep(0.15, 0.62, R.z)) * ssrDistFade;
     if (fresnel < 0.015 || towardCamFade < 0.02 || dot(R, viewNormal) < 0.01) {
-        return vec4(skyRefl + specGlint, fresnel);
+        return vec4(envFallback + specGlint, fresnel);
     }
 
-    /* Perspective-Correct Screen-Space DDA Raymarch (0 matrix multiplies inside the loop!):
-       Eliminates diagonal zebra stripes, staircase bands & corner gaps on mirrors/water/redstone! */
-    float marchLen = min((far > 1.0) ? far : 36.0, 36.0);
-    vec3 startPos = viewPos + viewNormal * max(0.025, -viewPos.z * 0.003);
+    /* Tight Perspective-Correct Screen-Space DDA Raymarch (12+4 steps, 0 matrix multiplies inside loop!):
+       Tight 0.075m near-surface thickness eliminates stretched-ribbon torch & block-edge smears! */
+    float marchLen = min((far > 1.0) ? far : 34.0, 34.0);
+    vec3 startPos = viewPos + viewNormal * max(0.022, -viewPos.z * 0.0028);
     if (R.z > 0.0001) {
         float zRoom = (-near * 1.15) - startPos.z;
-        if (zRoom <= 0.02) return vec4(skyRefl + specGlint, fresnel);
+        if (zRoom <= 0.02) return vec4(envFallback + specGlint, fresnel);
         marchLen = min(marchLen, zRoom / R.z);
     }
     vec3 endPos = startPos + R * marchLen;
@@ -1853,7 +1870,7 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
     vec3 p0 = fastProjectToScreen(startPos);
     vec3 p1 = fastProjectToScreen(endPos);
     if (p0.z < 0.0 || p1.z < 0.0) {
-        return vec4(skyRefl + specGlint, fresnel);
+        return vec4(envFallback + specGlint, fresnel);
     }
 
     vec2 uv0 = p0.xy;
@@ -1861,7 +1878,7 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
     float invZ0 = 1.0 / min(startPos.z, -near);
     float invZ1 = 1.0 / min(endPos.z, -near);
 
-    /* Clip ray segment strictly to visible screen box [0.002, 0.998] so ALL 16 steps cover on-screen pixels! */
+    /* Clip ray segment strictly to visible screen box [0.002, 0.998] */
     vec2 duv = uv1 - uv0;
     float sMax = 1.0;
     if (duv.x >  1e-5) sMax = min(sMax, (0.998 - uv0.x) / duv.x);
@@ -1869,14 +1886,14 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
     if (duv.y >  1e-5) sMax = min(sMax, (0.998 - uv0.y) / duv.y);
     if (duv.y < -1e-5) sMax = min(sMax, (0.002 - uv0.y) / duv.y);
     if (sMax <= 0.001) {
-        return vec4(skyRefl + specGlint, fresnel);
+        return vec4(envFallback + specGlint, fresnel);
     }
 
     uv1 = uv0 + duv * sMax;
     invZ1 = mix(invZ0, invZ1, sMax);
     vec2 pxSpan = (uv1 - uv0) * vec2(max(viewWidth, 1.0), max(viewHeight, 1.0));
     if (dot(pxSpan, pxSpan) < 2.25) {
-        return vec4(skyRefl + specGlint, fresnel);
+        return vec4(envFallback + specGlint, fresnel);
     }
 
     float sPrev = 0.0;
@@ -1887,11 +1904,10 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
     vec2 hitUV = uv0;
     bool hit = false;
 
-    /* 16 quadratic-fine screen-space steps: sub-2px near mirror corners, reaching full screen edge!
-       Strict front-to-back crossing (prevPen <= 0.04 -> pen > 0.0) auto-rearms in empty air! */
-    for (int i = 1; i <= 16; i++) {
-        float fi = float(i) * 0.0625;
-        float s = 0.25 * fi + 0.75 * fi * fi;
+    /* 12 quadratic-fine steps: crisp near mirror corners, 25% faster in full-screen mirror rooms! */
+    for (int i = 1; i <= 12; i++) {
+        float fi = float(i) * (1.0 / 12.0);
+        float s = 0.18 * fi + 0.82 * fi * fi;
         vec2 curUV = mix(uv0, uv1, s);
         float probeZ = 1.0 / mix(invZ0, invZ1, s);
 
@@ -1900,8 +1916,9 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
             float vz = fastViewZ(sd);
             float pen = vz - probeZ;
             float dzStep = abs(probeZ - prevProbeZ);
-            float thick = max(0.30, dzStep * 1.75 + 0.035 * (-probeZ));
-            if (pen > 0.0 && prevPen <= 0.04 && pen < thick) {
+            /* Tight thin-object thickness (0.08m close up -> eliminates stretched torch flame ribbons!) */
+            float thick = max(0.08, dzStep * 1.20 + 0.015 * (-probeZ));
+            if (pen > 0.0 && prevPen <= 0.03 && pen < thick) {
                 sHit = s;
                 hitPen = pen;
                 hitUV = curUV;
@@ -1917,15 +1934,15 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
     }
 
     if (!hit) {
-        return vec4(skyRefl + specGlint, fresnel);
+        return vec4(envFallback + specGlint, fresnel);
     }
 
-    /* 5-step perspective-correct binary bisection (32x sub-step refinement -> ZERO staircase!) */
+    /* 4-step perspective-correct binary bisection (16x sub-step refinement) */
     float sLo = sPrev;
     float sHi = sHit;
     float finalPen = hitPen;
     float finalProbeZ = 1.0 / mix(invZ0, invZ1, sHi);
-    for (int b = 0; b < 5; b++) {
+    for (int b = 0; b < 4; b++) {
         float sMid = 0.5 * (sLo + sHi);
         vec2 mUV = mix(uv0, uv1, sMid);
         float mProbeZ = 1.0 / mix(invZ0, invZ1, sMid);
@@ -1942,32 +1959,31 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
         }
     }
 
-    /* Tight post-bisection residual check rejects false hits behind thin foreground corners! */
-    if (finalPen > max(0.28, 0.05 * (-finalProbeZ))) {
-        return vec4(skyRefl + specGlint, fresnel);
+    /* Strict post-bisection residual check prevents stretched smears behind thin torch/block edges! */
+    if (finalPen > max(0.09, 0.025 * (-finalProbeZ))) {
+        return vec4(envFallback + specGlint, fresnel);
     }
 
     /* Reject hit if first-person hand covers colortex0, OR solid opaque hit faces strictly away */
     float dHandCheck = texture2D(depthtex1, hitUV).r;
     float dWorldCheck = texture2D(depthtex2, hitUV).r;
     if (dWorldCheck >= 0.9999 || dHandCheck < dWorldCheck - 1e-5) {
-        return vec4(skyRefl + specGlint, fresnel);
+        return vec4(envFallback + specGlint, fresnel);
     }
     vec4 hitSurf = texture2D(colortex3, hitUV);
     float hitRawByte = floor(hitSurf.w * 255.0 + 0.5);
     if (hitRawByte >= 32.0) {
         float hitMat = floor(hitRawByte * 0.03125);
-        /* Do NOT cull cross-mesh foliage (matTag == 2) so trees & leaves reflect 100% intact! */
         if (abs(hitMat - 2.0) > 0.5) {
             vec3 hitWorldN = octDecodeNormal(hitSurf.xy);
-            if (dot(hitWorldN, worldR) > 0.50) {
-                return vec4(skyRefl + specGlint, fresnel);
+            if (dot(hitWorldN, worldR) > 0.45) {
+                return vec4(envFallback + specGlint, fresnel);
             }
         }
     }
 
     float border = min(min(hitUV.x, 1.0 - hitUV.x), min(hitUV.y, 1.0 - hitUV.y));
-    float edgeFade = smoothstep(0.0, 0.08, border) * towardCamFade;
+    float edgeFade = smoothstep(0.0, 0.09, border) * towardCamFade;
     vec3 hitCol;
 #if SPECTRAL_DISPERSION
     if (dispersionAmt > 0.0002) {
@@ -1983,7 +1999,7 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
 #else
     hitCol = texture2D(colortex0, hitUV).rgb;
 #endif
-    vec3 reflCol = mix(skyRefl, hitCol, edgeFade) + specGlint * (1.0 - 0.90 * edgeFade);
+    vec3 reflCol = mix(envFallback, hitCol, edgeFade) + specGlint * (1.0 - 0.90 * edgeFade);
     return vec4(reflCol, fresnel);
 }
 
