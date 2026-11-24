@@ -156,10 +156,11 @@ void main() {
     bool isHand = (dOpaque < dNoHand - 1e-5);
     float transCode = 0.0;
     if (!isHand && d < dOpaque - 1e-5) {
-        if (transTag.x > 0.60) transCode = 2.0;
-        else if (transTag.x > 0.20) transCode = 1.0;
+        if (transTag.x > 0.65) transCode = 2.0;       /* glass / ice */
+        else if (transTag.x > 0.36) transCode = 1.5;  /* vertical waterfall */
+        else if (transTag.x > 0.12) transCode = 1.0;  /* flat horizontal water */
     }
-    bool isLiquidWater = (abs(transCode - 1.0) < 0.5);
+    bool isLiquidWater = (transCode > 0.5 && transCode < 1.75);
     bool isTranslucent = (transCode > 0.5);
 
     vec4 surfData = texture2D(colortex3, texcoord);
@@ -210,7 +211,9 @@ void main() {
 
     /* 2. Physical Optics Linear HDR Direct + Scattering + Dispersion + Indirect Specular */
     vec3 hdrScene;
-    vec3 worldPos = camRel + cameraPosition;
+    /* True feet-player space (includes gbufferModelViewInverse[3].xyz so shadows & caustics are exact in F5!) */
+    vec3 feetPos  = camRel + gbufferModelViewInverse[3].xyz;
+    vec3 worldPos = feetPos + cameraPosition;
 
     if (noGeometry) {
         vec3 skyScatHDR, endCloudsHDR;
@@ -238,7 +241,7 @@ void main() {
 #if SHADOWS && !defined(DIMENSION_NETHER) && !defined(DIMENSION_END)
         float outW = smoothstep(0.08, 0.45, tSky) * directLightWeatherFade();
         if (outW > 0.002) {
-            shadowRGB = mix(vec3(1.0), surfaceShadowColored(camRel, vec3(0.0, 1.0, 0.0), false, transThick), outW);
+            shadowRGB = mix(vec3(1.0), surfaceShadowColored(feetPos, vec3(0.0, 1.0, 0.0), false, transThick), outW);
         } else {
             shadowRGB = vec3(0.0);
         }
@@ -271,9 +274,9 @@ void main() {
             /* Physical Beer-Lambert spectral extinction (red absorbs fastest, blue penetrates deepest) */
             vec3 absorb = exp(-vec3(0.42, 0.14, 0.06) * min(waterDepth, 16.0));
             vec3 floorView = viewFromDepth(rUV, dOpaque);
-            vec3 floorRel = mat3(gbufferModelViewInverse) * floorView;
+            vec3 floorFeet = (gbufferModelViewInverse * vec4(floorView, 1.0)).xyz;
             float litScalar = dot(shadowRGB, vec3(0.3333));
-            vec3 caustics = evaluateWaterCaustics(floorRel + cameraPosition, worldShadowLightDir(), waterDepth, litScalar);
+            vec3 caustics = evaluateWaterCaustics(floorFeet + cameraPosition, worldShadowLightDir(), waterDepth, litScalar);
             hdrScene = albedoLin * absorb * (transIrr + caustics);
         } else {
             hdrScene = albedoLin * transIrr;
@@ -301,7 +304,7 @@ void main() {
         float outdoorW = smoothstep(0.08, 0.45, skyLight) * directLightWeatherFade();
 #if SHADOWS && !defined(DIMENSION_NETHER) && !defined(DIMENSION_END)
         if (outdoorW > 0.002 && (ndotl > 0.001 || isFoliage || isThickSSS)) {
-            shadowRGB = mix(vec3(1.0), surfaceShadowColored(camRel, worldNormal, isFoliage, shadowThick), outdoorW);
+            shadowRGB = mix(vec3(1.0), surfaceShadowColored(feetPos, worldNormal, isFoliage, shadowThick), outdoorW);
         } else if (outdoorW <= 0.002) {
             shadowRGB = vec3(0.0);
         }
@@ -417,9 +420,11 @@ void main() {
         volGate1 = relativeResidual(subRes1 * skyWeights.y, rays1);
     }
 
-    float packedTrans = (transCode > 1.5)
-        ? (0.60 + 0.35 * transTag.z)
-        : ((transCode > 0.5) ? (0.15 + 0.35 * transTag.z) : 0.0);
+    float packedTrans = (transCode > 1.75)
+        ? (0.64 + 0.32 * transTag.z)
+        : ((transCode > 1.25)
+            ? (0.44 + 0.14 * transTag.z)
+            : ((transCode > 0.5) ? (0.12 + 0.28 * transTag.z) : 0.0));
 
     float wMain1 = max(wVol1, edgeWork);
     gl_FragData[0] = vec4(hdrScene, 1.0);

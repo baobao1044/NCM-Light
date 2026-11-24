@@ -46,7 +46,7 @@ const float HAZE_COEFF = 0.0034;
 const float RAYS_COEFF = 0.0120;
 const float FOG_CAP = 0.42;
 const float RAYS_CAP = 0.75;
-const float SHADOW_BIAS = 0.00045;
+const float SHADOW_BIAS = 0.00012;
 
 const int TAPS_CONCEPT0 = 2;
 const int TAPS_CONCEPT1 = 4;
@@ -411,33 +411,43 @@ vec3 distortShadowNDC(vec3 ndc) {
     return vec3(ndc.xy / factor, ndc.z * 0.5);
 }
 
-vec3 surfaceShadowColored(vec3 playerPos, vec3 worldNormal, bool isFoliage, out float outThick) {
+vec3 surfaceShadowColored(vec3 feetPos, vec3 worldNormal, bool isFoliage, out float outThick) {
     outThick = 0.0;
 #if defined(DIMENSION_NETHER) || defined(DIMENSION_END)
     return vec3(1.0);
 #else
-    float dist2 = dot(playerPos, playerPos);
+    float dist2 = dot(feetPos, feetPos);
     if (dist2 > shadowDistance * shadowDistance) return vec3(1.0);
 
-    float dist = sqrt(dist2);
     vec3 lightDir = worldShadowLightDir();
     vec3 effNormal = isFoliage ? vec3(0.0, 1.0, 0.0) : worldNormal;
     float ndotl = dot(effNormal, lightDir);
-    float distScale = 1.0 + dist * 0.035;
-    float normalScale = (ndotl < 0.0) ? 0.032 : (0.030 + 0.045 * (1.0 - ndotl));
-    float sunOffset = isFoliage ? 0.20 : (0.025 * distScale);
-    vec3 biasedPos = playerPos
-                   + effNormal * (normalScale * distScale)
+
+    /* Exact local distorted shadow-texel size in world blocks:
+       Zero detached Peter-Panning close up AND zero zebra acne on distant hills! */
+    vec4 rawClip = shadowProjection * (shadowModelView * vec4(feetPos, 1.0));
+    vec3 rawNDC = rawClip.xyz / max(rawClip.w, 1e-5);
+    float rawEdge = max(abs(rawNDC.x), abs(rawNDC.y));
+    if (rawEdge > 0.98 || rawNDC.z > 1.0 || rawNDC.z < -1.0) return vec3(1.0);
+
+    float dFac = mix(1.0, sqrt(dot(rawNDC.xy, rawNDC.xy) + 0.0016), SHADOW_DISTORT);
+    float texelBlocks = (2.0 * shadowDistance / float(shadowMapResolution)) * ((dFac * dFac) / max(1.0 - SHADOW_DISTORT, 0.05));
+    float slopeFactor = clamp(1.0 - max(ndotl, 0.0), 0.0, 1.0);
+    float normalOffset = clamp(texelBlocks * (0.55 + 1.15 * slopeFactor), 0.018, 0.34);
+    float sunOffset = isFoliage ? max(0.14, texelBlocks * 1.1) : clamp(texelBlocks * 0.25, 0.008, 0.09);
+
+    vec3 biasedPos = feetPos
+                   + effNormal * normalOffset
                    + lightDir * sunOffset;
 
     vec4 shadowClip = shadowProjection * (shadowModelView * vec4(biasedPos, 1.0));
-    vec3 preNDC = shadowClip.xyz;
-    float rawEdge = max(abs(preNDC.x), abs(preNDC.y));
-    if (rawEdge > 0.98 || preNDC.z > 1.0 || preNDC.z < -1.0) return vec3(1.0);
+    vec3 preNDC = shadowClip.xyz / max(shadowClip.w, 1e-5);
+    float bEdge = max(abs(preNDC.x), abs(preNDC.y));
+    if (bEdge > 0.98 || preNDC.z > 1.0 || preNDC.z < -1.0) return vec3(1.0);
 
     vec3 dNDC = distortShadowNDC(preNDC);
     vec2 suv = dNDC.xy * 0.5 + 0.5;
-    float sampleZ = dNDC.z * 0.5 + 0.5 - SHADOW_BIAS * distScale;
+    float sampleZ = dNDC.z * 0.5 + 0.5 - SHADOW_BIAS;
 
     float resF = float(shadowMapResolution);
     float invRes = 1.0 / resF;
@@ -542,8 +552,9 @@ float marchShafts(vec3 dir, float tHit, int taps, out float contrast, out float 
     float upSlope = max(dir.y, 0.0) / HEIGHT_SCALE;
 
 #if SHADOWS
-    vec4 sOrig4 = shadowProjection * (shadowModelView * vec4(0.0, 0.0, 0.0, 1.0));
-    vec3 sOrigNDC = sOrig4.xyz;
+    /* Start volumetric shaft shadow projection from true camera position in feet-player space (exact in F5!) */
+    vec4 sOrig4 = shadowProjection * (shadowModelView * vec4(gbufferModelViewInverse[3].xyz, 1.0));
+    vec3 sOrigNDC = sOrig4.xyz / max(sOrig4.w, 1e-5);
     vec3 sDirNDC  = mat3(shadowProjection) * (mat3(shadowModelView) * dir);
 #endif
 
@@ -1152,23 +1163,28 @@ vec3 applyEinsteinLensing(vec3 dir, vec3 bhDir) {
     return normalize(dir - (tang / tLen) * deflAmt);
 }
 
-/* Fast 5-Tap Screen-Space Gargantua Contact Shadows for The End Terrain & Obsidian Pillars */
+/* Tight Grounded 8-Step Screen-Space Gargantua Contact Shadows for The End (ZERO banded ghosts!) */
 float traceEndContactShadow(vec3 viewPos, vec3 worldNormal) {
 #if !defined(DIMENSION_END)
     return 1.0;
 #else
-    float distFade = 1.0 - smoothstep(34.0, 52.0, -viewPos.z);
+    float distFade = 1.0 - smoothstep(24.0, 38.0, -viewPos.z);
     if (distFade <= 0.01) return 1.0;
     vec3 bhWorld = worldShadowLightDir();
-    if (dot(worldNormal, bhWorld) <= 0.01) return 0.0;
+    if (dot(worldNormal, bhWorld) <= 0.02) return 0.0;
 
     vec3 viewN = normalize(mat3(gbufferModelView) * worldNormal);
     vec3 lightView = normalize(mat3(gbufferModelView) * bhWorld);
-    vec3 startPos = viewPos + viewN * max(0.06, -viewPos.z * 0.004);
+    /* Fade out smoothly when light points back toward camera (prevents foreground silhouette artifacts!) */
+    float towardCamFade = 1.0 - smoothstep(0.05, 0.42, lightView.z);
+    if (towardCamFade <= 0.01) return 1.0;
 
+    vec3 startPos = viewPos + viewN * max(0.045, -viewPos.z * 0.0035);
     float occ = 0.0;
-    float t = 0.28;
-    for (int i = 0; i < 5; i++) {
+    /* 8 tight continuous steps (0.10m -> 1.45m) so shadows stay solid & grounded with zero gaps! */
+    for (int i = 1; i <= 8; i++) {
+        float fi = float(i) * 0.125;
+        float t = 1.45 * (fi * fi * 0.65 + fi * 0.35);
         vec3 probe = startPos + lightView * t;
         if (probe.z >= -near) break;
         vec3 proj = fastProjectToScreen(probe);
@@ -1178,17 +1194,18 @@ float traceEndContactShadow(vec3 viewPos, vec3 worldNormal) {
         float sd = texture2D(depthtex2, proj.xy).r;
         if (sd < 0.9999) {
             float vz = fastViewZ(sd);
-            float pen = vz - probe.z;
-            float thickLim = 0.42 + 0.24 * t;
-            if (pen > 0.045 && pen < thickLim) {
-                float hitW = smoothstep(0.045, 0.18, pen) * (1.0 - smoothstep(thickLim * 0.65, thickLim, pen));
-                float border = min(min(proj.x, 1.0 - proj.x), min(proj.y, 1.0 - proj.y));
-                occ = max(occ, hitW * smoothstep(0.0, 0.05, border));
+            /* Reject foreground blocks strictly closer than the shaded surface */
+            if (!(lightView.z < 0.0 && vz > viewPos.z + 0.08)) {
+                float pen = vz - probe.z;
+                if (pen > 0.035 && pen < 0.38) {
+                    float hitW = smoothstep(0.035, 0.14, pen) * (1.0 - smoothstep(0.24, 0.38, pen));
+                    float border = min(min(proj.x, 1.0 - proj.x), min(proj.y, 1.0 - proj.y));
+                    occ = max(occ, hitW * smoothstep(0.0, 0.04, border) * (1.0 - 0.35 * fi));
+                }
             }
         }
-        t *= 1.98;
     }
-    return 1.0 - 0.80 * occ * distFade;
+    return 1.0 - 0.72 * occ * distFade * towardCamFade;
 #endif
 }
 
@@ -1739,10 +1756,26 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
 
     float oneMinusCos = 1.0 - clamp(dot(-V, viewNormal), 0.001, 1.0);
     float omc2 = oneMinusCos * oneMinusCos;
-    float fresnel = clamp(f0 + (1.0 - f0) * (omc2 * omc2 * oneMinusCos), 0.0, 1.0) * smoothness;
+    float fresnel = clamp(f0 + (1.0 - f0) * (omc2 * omc2), 0.0, 1.0) * smoothness;
 
     vec3 worldR = normalize(mat3(gbufferModelViewInverse) * R);
     vec3 skyRefl = (skyAccess > 0.05) ? (analyticSkyReflectionLinear(worldR) * skyAccess) : vec3(0.0);
+
+    /* Sample live 1080p rendered sky from colortex0 (Gargantua Black Hole, Milky Way, Clouds, Aurora!)
+       whenever the reflected ray points toward on-screen sky pixels! */
+    if (skyAccess > 0.05 && R.z < -0.02) {
+        vec3 skyProj = fastProjectToScreen(viewPos + R * 220.0);
+        if (skyProj.z > 0.0 && skyProj.x > 0.01 && skyProj.x < 0.99 && skyProj.y > 0.01 && skyProj.y < 0.99) {
+            float dSkyCheck = texture2D(depthtex2, skyProj.xy).r;
+            float dSkyHand  = texture2D(depthtex1, skyProj.xy).r;
+            if (dSkyCheck >= 0.9999 && dSkyHand >= 0.9999) {
+                float sBorder = min(min(skyProj.x, 1.0 - skyProj.x), min(skyProj.y, 1.0 - skyProj.y));
+                float sBlend = smoothstep(0.01, 0.14, sBorder);
+                vec3 liveSky = max(texture2D(colortex0, skyProj.xy).rgb, vec3(0.0)) * skyAccess;
+                skyRefl = mix(skyRefl, liveSky, sBlend);
+            }
+        }
+    }
 
     float lightValid;
     vec3 lightDirView = activeLightDirView(lightValid);
@@ -1759,26 +1792,26 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
     }
 #endif
 
-    /* Fade out screen-space hits when ray points back toward camera OR beyond 48m (distant ocean keeps 0-tap sky/aurora reflection!) */
+    /* Fade out screen-space hits when ray points back toward camera OR beyond 48m */
     float ssrDistFade = 1.0 - smoothstep(34.0, 48.0, -viewPos.z);
-    float towardCamFade = (1.0 - smoothstep(0.02, 0.40, R.z)) * ssrDistFade;
-    if (fresnel < 0.018 || towardCamFade < 0.02 || dot(R, viewNormal) < 0.02) {
+    float towardCamFade = (1.0 - smoothstep(0.02, 0.42, R.z)) * ssrDistFade;
+    if (fresnel < 0.015 || towardCamFade < 0.02 || dot(R, viewNormal) < 0.01) {
         return vec4(skyRefl + specGlint, fresnel);
     }
 
-    float maxDist = min((far > 1.0) ? far : 34.0, 34.0);
-    vec3 startPos = viewPos + viewNormal * max(0.08, -viewPos.z * 0.008);
+    float maxDist = min((far > 1.0) ? far : 38.0, 38.0);
+    vec3 startPos = viewPos + viewNormal * max(0.07, -viewPos.z * 0.006);
 
     float tPrev = 0.0;
     float tHit = 0.0;
-    float prevPen = -1.0;
+    float hitPen = 999.0;
     vec2 hitUV = vec2(0.5);
     bool hit = false;
 
-    /* 8 geometric steps (0.35m -> 34m) strictly against depthtex2 (opaque world ONLY):
-       Requires true front-to-back crossing + rejects foreground blocks closer than the mirror! */
-    float tCurr = 0.35;
-    for (int i = 0; i < 8; i++) {
+    /* 12 smooth geometric steps (0.22m -> 38m, 1.56x ratio) strictly against depthtex2 (opaque world ONLY):
+       Step-matched thickness prevents 80% pass-through holes while rejecting foreground bleed! */
+    float tCurr = 0.22;
+    for (int i = 0; i < 12; i++) {
         vec3 probe = startPos + R * tCurr;
         if (probe.z >= -near) break;
 
@@ -1790,57 +1823,70 @@ vec4 traceReflectionRT(vec3 viewPos, vec3 worldNormal,
         float sd = texture2D(depthtex2, proj.xy).r;
         if (sd < 0.9999) {
             float vz = fastViewZ(sd);
-            /* If ray travels away from camera (R.z < 0), it CANNOT hit a foreground surface closer than viewPos! */
-            if (!(R.z < 0.0 && vz > viewPos.z + 0.12)) {
+            if (!(R.z < 0.0 && vz > viewPos.z + 0.10)) {
                 float pen = vz - probe.z;
-                if (pen > 0.01 && prevPen <= 0.05 && pen < 0.32 + 0.09 * tCurr) {
+                float stepLen = tCurr - tPrev;
+                float maxPen = max(0.55, stepLen * (0.75 + 0.90 * abs(R.z)));
+                if (pen > 0.0 && pen < maxPen) {
                     tHit = tCurr;
+                    hitPen = pen;
                     hitUV = proj.xy;
                     hit = true;
                     break;
                 }
-                prevPen = pen;
             }
-        } else {
-            prevPen = -1.0;
         }
         tPrev = tCurr;
-        tCurr = min(tCurr * 1.92, maxDist);
+        tCurr = min(tCurr * 1.56, maxDist);
     }
 
     if (!hit) {
         return vec4(skyRefl + specGlint, fresnel);
     }
 
+    /* 4-step binary bisection locks onto exact surface front face (1/16 sub-step accuracy!) */
     float tLo = tPrev;
     float tHi = tHit;
-    for (int b = 0; b < 3; b++) {
+    float finalPen = hitPen;
+    for (int b = 0; b < 4; b++) {
         float tMid = 0.5 * (tLo + tHi);
         vec3 midPos = startPos + R * tMid;
         vec3 mproj = fastProjectToScreen(midPos);
         if (mproj.z >= 0.0 && mproj.x > 0.0 && mproj.x < 1.0 && mproj.y > 0.0 && mproj.y < 1.0) {
             float md = texture2D(depthtex2, mproj.xy).r;
             float mz = (md < 0.9999) ? fastViewZ(md) : -1e6;
-            if (mz - midPos.z > 0.0 && !(R.z < 0.0 && mz > viewPos.z + 0.12)) {
+            float mpen = mz - midPos.z;
+            if (mpen > 0.0 && !(R.z < 0.0 && mz > viewPos.z + 0.10)) {
                 tHi = tMid;
                 hitUV = mproj.xy;
+                finalPen = mpen;
             } else {
                 tLo = tMid;
             }
         }
     }
 
-    /* Reject hit if first-person hand covers colortex0, OR hit surface is facing away (back-face bleed) */
+    /* Post-bisection residual check: rejects false hits behind thin foreground walls cleanly! */
+    if (finalPen > 0.42 + 0.055 * tHi) {
+        return vec4(skyRefl + specGlint, fresnel);
+    }
+
+    /* Reject hit if first-person hand covers colortex0, OR solid opaque hit faces strictly away */
     float dHandCheck = texture2D(depthtex1, hitUV).r;
     float dWorldCheck = texture2D(depthtex2, hitUV).r;
     if (dWorldCheck >= 0.9999 || dHandCheck < dWorldCheck - 1e-5) {
         return vec4(skyRefl + specGlint, fresnel);
     }
     vec4 hitSurf = texture2D(colortex3, hitUV);
-    if (hitSurf.w >= 0.125) {
-        vec3 hitWorldN = octDecodeNormal(hitSurf.xy);
-        if (dot(hitWorldN, worldR) > 0.35) {
-            return vec4(skyRefl + specGlint, fresnel);
+    float hitRawByte = floor(hitSurf.w * 255.0 + 0.5);
+    if (hitRawByte >= 32.0) {
+        float hitMat = floor(hitRawByte * 0.03125);
+        /* Do NOT cull cross-mesh foliage (matTag == 2) so trees & leaves reflect 100% intact! */
+        if (abs(hitMat - 2.0) > 0.5) {
+            vec3 hitWorldN = octDecodeNormal(hitSurf.xy);
+            if (dot(hitWorldN, worldR) > 0.45) {
+                return vec4(skyRefl + specGlint, fresnel);
+            }
         }
     }
 

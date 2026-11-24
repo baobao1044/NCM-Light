@@ -56,27 +56,33 @@ void main() {
 
     float reflWork = 0.0;
 
-    /* 2. Coherent Speckle-Free Ray-Traced Reflections + Horizon-Wide Ocean Aurora/Sky Reflections */
+    /* 2. Coherent Speckle-Free Ray-Traced Reflections + Live HDR Sky & Horizon Ocean Reflections */
 #if RT_REFLECTIONS
-    bool isWaterSurface = (packedTrans >= 0.10 && packedTrans < 0.55);
+    bool isFlatWater = (packedTrans >= 0.10 && packedTrans < 0.42);
+    bool isWaterfall = (packedTrans >= 0.42 && packedTrans < 0.61);
+    bool isWaterSurface = isFlatWater || isWaterfall;
     if (!noGeometry && !isHand && RT_STRENGTH > 0.001 && (isWaterSurface || (-viewPos.z) < 48.0)) {
-        vec3 worldPos = camRel + cameraPosition;
+        vec3 worldPos = camRel + gbufferModelViewInverse[3].xyz + cameraPosition;
         float distFade = 1.0 - smoothstep(34.0, 48.0, -viewPos.z);
 
         if (isWaterSurface) {
-            float transSky = clamp((packedTrans - 0.15) / 0.35, 0.0, 1.0);
+            if (isEyeInWater == 0) {
+                float transSky = isFlatWater
+                    ? clamp((packedTrans - 0.12) / 0.28, 0.0, 1.0)
+                    : clamp((packedTrans - 0.44) / 0.14, 0.0, 1.0);
+                /* Exact analytical Y-up normal + gentle ripple on flat water (ZERO depth-quantization bands!) */
+                vec3 reflN = isFlatWater ? waterWaveNormal(worldPos.xz) : reconstructGeomWorldNormal(texcoord, viewPos);
+                float smoothVal = clamp(0.96 * min(RT_STRENGTH, 1.25), 0.0, 0.98);
+                vec4 refl = traceReflectionRT(viewPos, reflN, 0.08, smoothVal, max(transSky, 0.35), 0.0005);
+                sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.94));
+                reflWork = 0.80 * distFade;
+            }
+        } else if (packedTrans >= 0.61) {
+            float transSky = clamp((packedTrans - 0.64) / 0.32, 0.0, 1.0);
             vec3 geomN = reconstructGeomWorldNormal(texcoord, viewPos);
-            vec3 reflN = (geomN.y > 0.85) ? waterWaveNormal(worldPos.xz) : geomN;
-            float smoothVal = clamp(0.95 * min(RT_STRENGTH, 1.25), 0.0, 0.98);
-            vec4 refl = traceReflectionRT(viewPos, reflN, 0.04, smoothVal, max(transSky, 0.35), 0.0006);
-            sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.94));
-            reflWork = 0.80 * distFade;
-        } else if (packedTrans >= 0.55) {
-            float transSky = clamp((packedTrans - 0.60) / 0.35, 0.0, 0.98);
-            vec3 geomN = reconstructGeomWorldNormal(texcoord, viewPos);
-            float smoothVal = clamp(0.78 * min(RT_STRENGTH, 1.25), 0.0, 0.90) * distFade;
-            vec4 refl = traceReflectionRT(viewPos, geomN, 0.04, smoothVal, max(transSky, 0.25), 0.0008);
-            sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.65));
+            float smoothVal = clamp(0.84 * min(RT_STRENGTH, 1.25), 0.0, 0.92) * distFade;
+            vec4 refl = traceReflectionRT(viewPos, geomN, 0.075, smoothVal, max(transSky, 0.25), 0.0006);
+            sceneHDR = mix(sceneHDR, refl.rgb, clamp(refl.a, 0.0, 0.72));
             reflWork = 0.70;
         } else {
             vec4 surfData = texture2D(colortex3, texcoord);
