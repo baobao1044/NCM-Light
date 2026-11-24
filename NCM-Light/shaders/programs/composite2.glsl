@@ -139,14 +139,22 @@ void main() {
             denoiseDeltaNCM(texcoord, viewPos.z, worldNormal, centerSurprise, estGI, estL1, estAO);
             edgeWork = max(coarse1.w, centerSurprise);
         } else {
-            /* Ultra-Fast L1-Cached 4-Tap Tent Filter on 0.25x colortex4 ONLY (0 depth/normal reads!):
-               Eliminates 4x4 colored GI noise blotches on flat walls while staying super light on UHD 620! */
+            /* Ultra-Fast L1-Cached 4-Tap Tent Filter on 0.25x colortex4 + colortex1.y (0 depth/normal reads!):
+               Eliminates 4x4 GI & AO blotches on stone/walls while staying super light on UHD 620! */
             vec2 qStep = 1.0 / max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
-            vec3 g00 = max(texture2D(colortex4, clamp(texcoord + vec2(-0.5, -0.5) * qStep, 0.002, 0.998)).rgb, vec3(0.0));
-            vec3 g10 = max(texture2D(colortex4, clamp(texcoord + vec2( 0.5, -0.5) * qStep, 0.002, 0.998)).rgb, vec3(0.0));
-            vec3 g01 = max(texture2D(colortex4, clamp(texcoord + vec2(-0.5,  0.5) * qStep, 0.002, 0.998)).rgb, vec3(0.0));
-            vec3 g11 = max(texture2D(colortex4, clamp(texcoord + vec2( 0.5,  0.5) * qStep, 0.002, 0.998)).rgb, vec3(0.0));
-            estAO = clamp(coarse1.y, 0.25, 1.0);
+            vec2 uv00 = clamp(texcoord + vec2(-0.5, -0.5) * qStep, 0.002, 0.998);
+            vec2 uv10 = clamp(texcoord + vec2( 0.5, -0.5) * qStep, 0.002, 0.998);
+            vec2 uv01 = clamp(texcoord + vec2(-0.5,  0.5) * qStep, 0.002, 0.998);
+            vec2 uv11 = clamp(texcoord + vec2( 0.5,  0.5) * qStep, 0.002, 0.998);
+            vec3 g00 = max(texture2D(colortex4, uv00).rgb, vec3(0.0));
+            vec3 g10 = max(texture2D(colortex4, uv10).rgb, vec3(0.0));
+            vec3 g01 = max(texture2D(colortex4, uv01).rgb, vec3(0.0));
+            vec3 g11 = max(texture2D(colortex4, uv11).rgb, vec3(0.0));
+            float a00 = texture2D(colortex1, uv00).y;
+            float a10 = texture2D(colortex1, uv10).y;
+            float a01 = texture2D(colortex1, uv01).y;
+            float a11 = texture2D(colortex1, uv11).y;
+            estAO = clamp(0.25 * (a00 + a10 + a01 + a11), 0.25, 1.0);
             estGI = 0.25 * (g00 + g10 + g01 + g11);
             estL1 = fastSH.rgb;
         }

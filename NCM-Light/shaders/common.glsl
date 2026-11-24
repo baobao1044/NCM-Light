@@ -870,8 +870,47 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
         }
     }
 
+    /* Deterministic 4-Quadrant Crevice RTAO (100% noise-free & temporally invariant -> ZERO blotches!) */
+    vec2 aoDirs[4];
+    aoDirs[0] = vec2( 0.92388,  0.38268);
+    aoDirs[1] = vec2(-0.38268,  0.92388);
+    aoDirs[2] = vec2(-0.92388, -0.38268);
+    aoDirs[3] = vec2( 0.38268, -0.92388);
+
+    float detOcc = 0.0;
+    float aoNear = 0.48 + viewDist * 0.014;
+    float aoMid  = clamp(1.65 + viewDist * 0.05, 1.65, 3.6);
+    for (int q = 0; q < 4; q++) {
+        vec3 aoRay = (b1 * aoDirs[q].x + b2 * aoDirs[q].y) * 0.78 + viewNormal * 0.6258;
+        float qOcc = 0.0;
+
+        vec3 pA = startPos + aoRay * aoNear;
+        vec3 prjA = fastProjectToScreen(pA);
+        if (prjA.z > 0.0 && prjA.x > 0.003 && prjA.x < 0.997 && prjA.y > 0.003 && prjA.y < 0.997) {
+            float sdA = texture2D(depthtex2, prjA.xy).r;
+            if (sdA < 0.9999) {
+                float penA = fastViewZ(sdA) - pA.z;
+                if (penA > 0.025 && penA < 0.85) {
+                    qOcc = 1.0 - smoothstep(0.45, 0.85, penA);
+                }
+            }
+        }
+        vec3 pB = startPos + aoRay * aoMid;
+        vec3 prjB = fastProjectToScreen(pB);
+        if (prjB.z > 0.0 && prjB.x > 0.003 && prjB.x < 0.997 && prjB.y > 0.003 && prjB.y < 0.997) {
+            float sdB = texture2D(depthtex2, prjB.xy).r;
+            if (sdB < 0.9999) {
+                float penB = fastViewZ(sdB) - pB.z;
+                if (penB > 0.05 && penB < 1.85) {
+                    qOcc = max(qOcc, (1.0 - smoothstep(1.05, 1.85, penB)) * 0.55);
+                }
+            }
+        }
+        detOcc += qOcc;
+    }
+
     float invSpp = 1.0 / totalRaysF;
-    outAO = 1.0 - clamp((occSum * invSpp) * distAtten * 0.88, 0.0, 0.68);
+    outAO = 1.0 - clamp((detOcc * 0.25) * distAtten * 0.80, 0.0, 0.62);
     rawRGB *= invSpp;
 
     if (hasHistory) {
@@ -905,32 +944,42 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
 #endif
 }
 
-/* Ultra-Fast 2-Tap Scalar Micro-Crevice AO (UHD 620 Optimized: 0 viewFromDepth unprojects!) */
+/* Second-Derivative Laplacian Concavity Micro-Crevice AO (0 matrix unprojects, 0 convex edge outlines!):
+   On any flat slanted wall: dzA + dzB == 0 -> ZERO false darkening!
+   On any outer convex cube edge: dzA + dzB < 0 -> ZERO cartoon black border!
+   Strictly darkens true inner concave 90-deg crevices where dzA + dzB > 0! */
 float microCreviceAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
     float viewDist = -viewPos.z;
-    if (viewDist > 18.0) return 1.0;
-    float fade = 1.0 - smoothstep(11.0, 18.0, viewDist);
-    vec2 stepUV = vec2(2.5 / max(viewWidth, 1.0), 2.5 / max(viewHeight, 1.0));
+    if (viewDist > 16.0) return 1.0;
+    float fade = 1.0 - smoothstep(9.0, 16.0, viewDist);
+    vec2 px = vec2(2.0 / max(viewWidth, 1.0), 2.0 / max(viewHeight, 1.0));
+    float z0 = viewPos.z;
 
-    float dA = texture2D(depthtex2, clamp(uv + stepUV, 0.002, 0.998)).r;
-    float dB = texture2D(depthtex2, clamp(uv - stepUV, 0.002, 0.998)).r;
+    float dR = texture2D(depthtex2, clamp(uv + vec2(px.x, 0.0), 0.002, 0.998)).r;
+    float dL = texture2D(depthtex2, clamp(uv - vec2(px.x, 0.0), 0.002, 0.998)).r;
+    float dU = texture2D(depthtex2, clamp(uv + vec2(0.0, px.y), 0.002, 0.998)).r;
+    float dD = texture2D(depthtex2, clamp(uv - vec2(0.0, px.y), 0.002, 0.998)).r;
 
     float occ = 0.0;
-    float z0 = viewPos.z;
-    float thresh = 0.06 + viewDist * 0.025;
-    if (dA < 0.9999) {
-        float dzA = fastViewZ(dA) - z0;
-        if (dzA > 0.015 && dzA < 0.65) {
-            occ += clamp((dzA - 0.015) / thresh, 0.0, 0.85) * (1.0 - dzA * 1.4);
+    float scale = 0.045 + viewDist * 0.018;
+    if (dR < 0.9999 && dL < 0.9999) {
+        float dzR = fastViewZ(dR) - z0;
+        float dzL = fastViewZ(dL) - z0;
+        /* Both neighbors must lie within local surface neighborhood (rejects sky/background silhouettes!) */
+        if (abs(dzR) < 0.55 && abs(dzL) < 0.55) {
+            float concX = dzR + dzL;
+            if (concX > 0.018) occ += clamp((concX - 0.018) / scale, 0.0, 0.75);
         }
     }
-    if (dB < 0.9999) {
-        float dzB = fastViewZ(dB) - z0;
-        if (dzB > 0.015 && dzB < 0.65) {
-            occ += clamp((dzB - 0.015) / thresh, 0.0, 0.85) * (1.0 - dzB * 1.4);
+    if (dU < 0.9999 && dD < 0.9999) {
+        float dzU = fastViewZ(dU) - z0;
+        float dzD = fastViewZ(dD) - z0;
+        if (abs(dzU) < 0.55 && abs(dzD) < 0.55) {
+            float concY = dzU + dzD;
+            if (concY > 0.018) occ += clamp((concY - 0.018) / scale, 0.0, 0.75);
         }
     }
-    return 1.0 - clamp(occ * 0.42 * fade, 0.0, 0.36);
+    return 1.0 - clamp(occ * 0.22 * fade, 0.0, 0.26);
 }
 
 /* == Physical Optics: Kulla-Conty RGB GGX, Thin-Film Iridescence, Sparkle & Rainbow == */
@@ -1055,30 +1104,30 @@ vec4 evaluateVolumetricSkyL0(vec3 dir) {
     float bulge     = exp(-lat * lat * 13.0 - lon * lon * 1.25);
 
     /* Dark molecular dust absorption rift carving dramatic contrast through the Milky Way */
-    float dustMask = smoothstep(0.34, 0.72, nWarp * 0.70 + nFine * 0.30) * exp(-lat * lat * 38.0);
-    float dustTrans = 1.0 - 0.82 * dustMask;
+    float dustMask = smoothstep(0.30, 0.68, nWarp * 0.70 + nFine * 0.30) * exp(-lat * lat * 32.0);
+    float dustTrans = 1.0 - 0.88 * dustMask;
 
-    /* Deep cosmic vacuum + Sapphire spiral arms + Warm Golden-Amber Galactic Core */
-    vec3 vacuum   = vec3(0.0022, 0.0030, 0.0080);
-    vec3 armGlow  = vec3(0.06, 0.13, 0.34) * (planeWide * (0.45 + 0.85 * nBase));
-    vec3 coreGlow = vec3(0.95, 0.62, 0.30) * (bulge * (0.55 + 0.75 * nWarp) * 0.58);
-    vec3 starCloud = vec3(0.32, 0.40, 0.66) * (planeCore * nFine * 0.55);
+    /* Deep cosmic vacuum + Sapphire spiral arms + Rich Golden-Amber Galactic Core (non-washed contrast!) */
+    vec3 vacuum   = vec3(0.0018, 0.0026, 0.0072);
+    vec3 armGlow  = vec3(0.045, 0.11, 0.32) * (planeWide * (0.40 + 0.85 * nBase));
+    vec3 coreGlow = vec3(0.82, 0.48, 0.22) * (bulge * (0.50 + 0.75 * nWarp) * 0.44);
+    vec3 starCloud = vec3(0.22, 0.30, 0.56) * (planeCore * nFine * 0.42);
 
     /* Hubble-palette H-II Emission Nebulae: crimson H-alpha (656nm) + cyan-teal [O III] (501nm) */
     float h2Region = smoothstep(0.50, 0.82, nBase * 0.55 + nFine * 0.45) * planeWide;
     float o3Region = smoothstep(0.54, 0.84, cloudFBM(gUV * 2.1 + vec2(11.3, 5.7))) * planeWide;
-    vec3 nebHa = vec3(0.68, 0.11, 0.32) * (h2Region * 0.42);
-    vec3 nebO3 = vec3(0.06, 0.42, 0.58) * (o3Region * 0.36);
+    vec3 nebHa = vec3(0.62, 0.10, 0.30) * (h2Region * 0.36);
+    vec3 nebO3 = vec3(0.05, 0.40, 0.56) * (o3Region * 0.32);
 
     /* Subtle high-latitude cosmic cirrus so looking straight up has deep astronomical depth */
-    float cirrus = smoothstep(0.45, 0.85, nWarp) * (1.0 - planeWide) * 0.08;
-    vec3 cosmic = vacuum + (armGlow + coreGlow + starCloud + nebHa + nebO3) * dustTrans + vec3(0.04, 0.06, 0.16) * cirrus;
+    float cirrus = smoothstep(0.45, 0.85, nWarp) * (1.0 - planeWide) * 0.06;
+    vec3 cosmic = vacuum + (armGlow + coreGlow + starCloud + nebHa + nebO3) * dustTrans + vec3(0.03, 0.05, 0.14) * cirrus;
 
     /* Soft ambient corona around the Gargantua Black Hole direction */
     vec3 bhDir = normalize(vec3(0.46, 0.52, -0.72));
     float bhCos = max(dot(dir, bhDir), 0.0);
-    float bhHalo = pow(bhCos, 16.0) * 0.22 + pow(bhCos, 64.0) * 0.45;
-    cosmic += vec3(0.95, 0.50, 0.18) * bhHalo;
+    float bhHalo = pow(bhCos, 22.0) * 0.15 + pow(bhCos, 72.0) * 0.32;
+    cosmic += vec3(0.90, 0.46, 0.16) * bhHalo;
 
     return vec4(cosmic, 0.0);
 #else
@@ -1307,41 +1356,40 @@ vec3 evaluateEndCosmosFullRes(vec3 dir, vec3 baseNebulaHDR) {
         /* Cinematic 16-deg accretion disk roll tilt */
         vec2 bp = vec2(bp0.x * 0.961 - bp0.y * 0.276, bp0.x * 0.276 + bp0.y * 0.961);
         float r = length(bp);
-        float rH = 0.056;
+        float rH = 0.064;
 
         /* 1. Event Horizon Shadow completely eclipses stars & nebulae behind the Black Hole */
         float eclipse = smoothstep(rH * 0.95, rH * 1.04, r);
         col *= eclipse;
 
         /* 2. Razor-sharp Einstein Photon Ring right around the shadow rim (r ~ 1.06 rH) */
-        float photonRing = exp(-pow((r - rH * 1.06) / (rH * 0.095), 2.0));
+        float photonRing = exp(-pow((r - rH * 1.05) / (rH * 0.085), 2.0));
 
-        /* 3. Relativistic Plasma Swirl + Doppler Beaming (smoothly tapered so disk stays finite & majestic!) */
+        /* 3. Relativistic Plasma Swirl + Doppler Beaming */
         float ang = atan(bp.y, bp.x);
-        float swirl1 = 0.58 + 0.42 * sin(ang * 3.0 - log(r + 0.02) * 14.0 - frameTimeCounter * 0.55);
-        float swirl2 = 0.62 + 0.38 * cos(ang * 5.0 + log(r + 0.02) * 20.0 - frameTimeCounter * 0.85);
+        float swirl1 = 0.62 + 0.38 * sin(ang * 3.0 - log(r + 0.02) * 14.0 - frameTimeCounter * 0.55);
+        float swirl2 = 0.65 + 0.35 * cos(ang * 5.0 + log(r + 0.02) * 20.0 - frameTimeCounter * 0.85);
         float plasma = swirl1 * swirl2;
-        float doppler = clamp(0.68 - bp.x / (rH * 3.4), 0.26, 1.32);
+        float doppler = clamp(0.70 - bp.x / (rH * 3.6), 0.30, 1.30);
         vec3 diskHue = mix(vec3(0.95, 0.26, 0.06), vec3(1.32, 1.04, 0.72), clamp(doppler * 0.85, 0.0, 1.0));
-        diskHue = mix(diskHue, vec3(0.88, 0.96, 1.35), smoothstep(1.02, 1.32, doppler) * 0.40);
+        diskHue = mix(diskHue, vec3(0.88, 0.96, 1.35), smoothstep(1.02, 1.30, doppler) * 0.38);
 
-        /* 4. Compact Interstellar Equatorial Accretion Disk sweeping gracefully across the event horizon */
-        float eqR = length(vec2(bp.x * 0.42, bp.y * 3.10));
-        float radialTaper = exp(-pow(r / (rH * 2.55), 2.2));
-        float eqMask = exp(-pow((eqR - rH * 0.72) / (rH * 0.38), 2.0)) * radialTaper;
-        float frontStrip = eqMask * smoothstep(-rH * 0.30, rH * 0.14, -bp.y);
+        /* 4. Iconic Interstellar Horizontal Accretion Band sweeping cleanly IN FRONT OF the event horizon */
+        float bandY = exp(-pow(bp.y / (rH * 0.16 + abs(bp.x) * 0.06), 2.0));
+        float bandX = exp(-pow(bp.x / (rH * 2.55), 2.4));
+        float frontStrip = bandY * bandX * (0.65 + 0.35 * smoothstep(-rH * 0.25, rH * 0.25, -bp.y));
 
         /* 5. Gravitationally Lensed Upper & Lower Einstein Disk Arches (back of disk bent over & under!) */
-        float lensRing = exp(-pow((r - rH * 1.22) / (rH * 0.26), 2.0)) * smoothstep(rH * 0.96, rH * 1.07, r);
-        float lensArch = lensRing * (0.42 + 0.58 * abs(bp.y / max(r, 1e-4)));
+        float lensRing = exp(-pow((r - rH * 1.24) / (rH * 0.25), 2.0)) * smoothstep(rH * 0.96, rH * 1.07, r);
+        float lensArch = lensRing * (0.45 + 0.55 * abs(bp.y / max(r, 1e-4)));
 
-        /* 6. Faint Relativistic Synchrotron Polar Jets along the spin axis */
-        float jetWidth = exp(-pow(bp.x / (rH * 0.22 + abs(bp.y) * 0.11), 2.0));
-        float jetLen   = exp(-abs(bp.y) / (rH * 3.8)) * smoothstep(rH * 0.95, rH * 1.45, abs(bp.y));
-        vec3 polarJet  = vec3(0.30, 0.55, 1.15) * (jetWidth * jetLen * 0.24);
+        /* 6. Delicate Relativistic Synchrotron Polar Plumes (short & subtle, never spotlight beams!) */
+        float jetWidth = exp(-pow(bp.x / (rH * 0.18 + abs(bp.y) * 0.10), 2.0));
+        float jetLen   = exp(-pow(abs(bp.y) / (rH * 2.2), 1.6)) * smoothstep(rH * 1.05, rH * 1.55, abs(bp.y));
+        vec3 polarJet  = vec3(0.28, 0.52, 1.10) * (jetWidth * jetLen * 0.14);
 
-        vec3 bhEmission = diskHue * ((frontStrip * 1.45 + lensArch * 0.92) * (0.48 + 0.85 * plasma) * doppler)
-                        + vec3(1.45, 1.22, 0.88) * (photonRing * (0.75 + 0.55 * doppler))
+        vec3 bhEmission = diskHue * ((frontStrip * 1.35 + lensArch * 0.95) * (0.52 + 0.75 * plasma) * doppler)
+                        + vec3(1.45, 1.22, 0.88) * (photonRing * (0.75 + 0.50 * doppler))
                         + polarJet;
         col += bhEmission;
     }
