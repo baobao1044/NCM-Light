@@ -1200,21 +1200,113 @@ def generate_sky_dimensions_bench():
     for sp in axB.spines.values(): sp.set_edgecolor(ACCENT_GREEN); sp.set_linewidth(1.3)
     axB.set_title("B. Night Sky: Emerald-to-Violet Aurora Borealis (Reflected in SSR!)", color=TEXT_MAIN, fontsize=9.8, fontweight="bold", pad=6)
 
-    # --- Panel C: End Accretion Vortex ---
+    # --- Panel C: Astronomical End Cosmos (Milky Way + Gargantua Black Hole + M31 + Planck Stars) ---
     axC = fig.add_subplot(gs[1, 0])
-    ang = np.arctan2(dz, dx)
-    elev = np.abs(dy)
-    swirl = np.sin(ang * 3.0 + elev * 8.5 - 1.2) * 0.5 + 0.5
-    f_end = fbm(dx / (elev + 0.35) * 1.8 + 0.4, dz / (elev + 0.35) * 1.8 - 0.3)
-    ring = np.exp(-(((elev - 0.32) / 0.24) ** 2))
-    vortex = np.array([0.06, 0.02, 0.14]) * (1.0 - (swirl * f_end)[:, :, None]) + np.array([0.42, 0.14, 0.68]) * (swirl * f_end)[:, :, None]
-    core = np.array([0.75, 0.35, 1.0]) * (ring * f_end)[:, :, None] * 0.68
-    estars = (hash21(np.floor(dx / (elev + 0.25) * 85.0), np.floor(dz / (elev + 0.25) * 85.0)) > 0.992).astype(float)[:, :, None] * np.array([0.8, 0.7, 1.0])
-    img_end = np.clip(vortex * 0.75 + core + estars * 0.85, 0, 1)
+    # Point camera right toward the Gargantua Black Hole + tilted Milky Way + M31 sky panorama
+    H_e, W_e = 180, 320
+    ue = np.linspace(-1.35, 1.35, W_e)
+    ve = np.linspace(0.05, 1.15, H_e)
+    uue, vve = np.meshgrid(ue, ve)
+    inv_e = 1.0 / np.sqrt(uue*uue + vve*vve + 1.0)
+    edx, edy, edz = uue*inv_e, vve*inv_e, -inv_e
+
+    gal_n = np.array([0.32, 0.78, -0.54]); gal_n /= np.linalg.norm(gal_n)
+    gal_c = np.array([-0.76, 0.42, 0.49]); gal_c /= np.linalg.norm(gal_c)
+    gal_e = np.cross(gal_n, gal_c); gal_e /= np.linalg.norm(gal_e)
+    lat = edx*gal_n[0] + edy*gal_n[1] + edz*gal_n[2]
+    lon = np.arctan2(edx*gal_e[0] + edy*gal_e[1] + edz*gal_e[2],
+                     edx*gal_c[0] + edy*gal_c[1] + edz*gal_c[2])
+    gux, guy = lon * 1.45, lat * 4.2
+    nb = fbm(gux * 1.35 + 3.1, guy * 1.35 - 1.7)
+    nw = fbm(gux * 2.40 + nb * 1.4, guy * 2.40 - nb * 1.1)
+    nf = fbm(gux * 4.20 - nw * 0.9, guy * 4.20 - nb * 0.8)
+    pw = np.exp(-lat*lat * 9.5)
+    pc = np.exp(-lat*lat * 26.0)
+    bulge = np.exp(-lat*lat * 13.0 - (lon + 1.1)**2 * 1.1)
+    dust = np.clip((nw*0.7 + nf*0.3 - 0.34) / 0.38, 0, 1) * np.exp(-lat*lat * 38.0)
+    dtr = (1.0 - 0.82 * dust)[:, :, None]
+
+    end_hdr = (
+        np.array([0.0022, 0.0030, 0.0080])[None, None, :]
+        + (
+            np.array([0.07, 0.15, 0.38])[None, None, :] * (pw * (0.45 + 0.85 * nb))[:, :, None]
+            + np.array([0.98, 0.64, 0.32])[None, None, :] * (bulge * (0.55 + 0.75 * nw) * 0.65)[:, :, None]
+            + np.array([0.34, 0.42, 0.68])[None, None, :] * (pc * nf * 0.55)[:, :, None]
+            + np.array([0.70, 0.12, 0.34])[None, None, :] * (np.clip((nb*0.55 + nf*0.45 - 0.50)/0.32, 0, 1) * pw * 0.45)[:, :, None]
+            + np.array([0.06, 0.44, 0.60])[None, None, :] * (np.clip((fbm(gux*2.1+11.3, guy*2.1+5.7) - 0.54)/0.30, 0, 1) * pw * 0.38)[:, :, None]
+        ) * dtr
+    )
+
+    # Crisp Planck starfield
+    rng_s = np.random.default_rng(42)
+    star_u = rng_s.random((H_e, W_e))
+    star_t = rng_s.random((H_e, W_e))
+    s_mask = (star_u > (0.994 - 0.012 * pw)).astype(float)
+    s_mag = np.where(s_mask > 0, ((star_u - 0.980) / 0.020) ** 2, 0.0)
+    s_col = np.stack([
+        np.where(star_t < 0.5, 1.0, 1.0 - 0.35 * (star_t - 0.5) * 2.0),
+        np.where(star_t < 0.5, 0.65 + 0.32 * star_t * 2.0, 0.97 - 0.18 * (star_t - 0.5) * 2.0),
+        np.where(star_t < 0.5, 0.38 + 0.58 * star_t * 2.0, 1.0),
+    ], axis=-1)
+    end_hdr = end_hdr + s_col * (s_mag[:, :, None] * 1.45)
+
+    # Andromeda M31 Spiral Galaxy on upper-left
+    m31 = np.array([-0.52, 0.56, -0.64]); m31 /= np.linalg.norm(m31)
+    mU = np.cross(np.array([0.0, 1.0, 0.0]), m31); mU /= np.linalg.norm(mU)
+    mV = np.cross(m31, mU)
+    mpx = edx*mU[0] + edy*mU[1] + edz*mU[2]
+    mpy = edx*mV[0] + edy*mV[1] + edz*mV[2]
+    mrx = mpx*0.88 - mpy*0.47
+    mry = (mpx*0.47 + mpy*0.88) * 2.85
+    mrad = np.sqrt(mrx*mrx + mry*mry)
+    mang = np.arctan2(mry, mrx)
+    msp = 0.5 + 0.5 * np.cos(2.0 * mang - 6.8 * np.log(mrad + 0.012))
+    mdisk = np.exp(-mrad * 14.5) * (0.35 + 0.65 * msp * msp)
+    mnuc = np.exp(-mrad * mrad * 1800.0)
+    end_hdr = end_hdr + np.array([0.40, 0.55, 0.98])[None, None, :] * (mdisk * 0.55)[:, :, None] + np.array([1.2, 0.9, 0.6])[None, None, :] * (mnuc * 1.25)[:, :, None]
+
+    # Gargantua Relativistic Black Hole + Lensed Accretion Disk + Doppler Beaming on upper-right
+    bh = np.array([0.38, 0.48, -0.79]); bh /= np.linalg.norm(bh)
+    bU0 = np.cross(np.array([0.0, 1.0, 0.0]), bh); bU0 /= np.linalg.norm(bU0)
+    bV0 = np.cross(bh, bU0)
+    bp0x = edx*bU0[0] + edy*bU0[1] + edz*bU0[2]
+    bp0y = edx*bV0[0] + edy*bV0[1] + edz*bV0[2]
+    bpx = bp0x*0.961 - bp0y*0.276
+    bpy = bp0x*0.276 + bp0y*0.961
+    br = np.sqrt(bpx*bpx + bpy*bpy)
+    rH = 0.075
+    eclipse = np.clip((br - rH*0.95) / (rH*0.09), 0.0, 1.0)[:, :, None]
+    end_hdr = end_hdr * eclipse
+    bang = np.arctan2(bpy, bpx)
+    plasma = (0.58 + 0.42*np.sin(bang*3.0 - np.log(br + 0.02)*14.0)) * (0.62 + 0.38*np.cos(bang*5.0 + np.log(br + 0.02)*20.0))
+    doppler = np.clip(0.68 - bpx / (rH * 3.4), 0.26, 1.32)
+    t_d = np.clip(doppler * 0.85, 0.0, 1.0)[:, :, None]
+    dhue = np.array([0.95, 0.26, 0.06])[None, None, :] * (1.0 - t_d) + np.array([1.32, 1.04, 0.72])[None, None, :] * t_d
+    blue_s = np.clip((doppler - 1.02) / 0.30, 0.0, 1.0)[:, :, None] * 0.40
+    dhue = dhue * (1.0 - blue_s) + np.array([0.88, 0.96, 1.35])[None, None, :] * blue_s
+    eqR = np.sqrt((bpx*0.42)**2 + (bpy*3.10)**2)
+    rTaper = np.exp(-((br / (rH * 2.55)) ** 2.2))
+    eqM = np.exp(-((eqR - rH*0.72) / (rH*0.38))**2) * rTaper
+    front = eqM * np.clip((-bpy + rH*0.30)/(rH*0.44), 0, 1)
+    lensR = np.exp(-((br - rH*1.22) / (rH*0.26))**2) * np.clip((br - rH*0.96)/(rH*0.11), 0, 1)
+    lensA = lensR * (0.42 + 0.58 * np.abs(bpy / np.maximum(br, 1e-4)))
+    pring = np.exp(-((br - rH*1.06) / (rH*0.095))**2)
+    jw = np.exp(-(bpx / (rH*0.22 + np.abs(bpy)*0.11))**2)
+    jl = np.exp(-np.abs(bpy) / (rH*3.6)) * np.clip((np.abs(bpy) - rH*0.95)/(rH*0.50), 0, 1)
+    end_hdr = (
+        end_hdr
+        + dhue * ((front*1.55 + lensA*0.98) * (0.48 + 0.85*plasma) * doppler)[:, :, None]
+        + np.array([1.45, 1.22, 0.88])[None, None, :] * (pring * (0.75 + 0.55*doppler))[:, :, None]
+        + np.array([0.30, 0.55, 1.15])[None, None, :] * (jw * jl * 0.28)[:, :, None]
+    )
+    # ACES Filmic + sRGB
+    xe = np.maximum(end_hdr, 0.0) * 0.95
+    me = np.clip((xe * (2.51 * xe + 0.03)) / (xe * (2.43 * xe + 0.59) + 0.14), 0.0, 1.0)
+    img_end = np.clip(1.128 * np.sqrt(me) - 0.128 * np.sqrt(np.sqrt(me)), 0.0, 1.0)
     axC.imshow(img_end, origin="lower")
     axC.set_xticks([]); axC.set_yticks([])
-    for sp in axC.spines.values(): sp.set_edgecolor(ACCENT_PURPLE); sp.set_linewidth(1.3)
-    axC.set_title("C. The End: Procedural Accretion Vortex + Starfield (Shadowless)", color=TEXT_MAIN, fontsize=9.8, fontweight="bold", pad=6)
+    for sp in axC.spines.values(): sp.set_edgecolor(ACCENT_GOLD); sp.set_linewidth(1.3)
+    axC.set_title("C. The End: Milky Way + Gargantua Black Hole + M31 + Planck Stars", color=TEXT_MAIN, fontsize=9.5, fontweight="bold", pad=6)
 
     # --- Panel D: Multi-Dimension Pipeline Cost Savings ---
     axD = fig.add_subplot(gs[1, 1])

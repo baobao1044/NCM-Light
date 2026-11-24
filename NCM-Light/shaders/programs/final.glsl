@@ -171,7 +171,7 @@ void main() {
     }
 #endif
 
-    /* 2b. Multiscale Volumetric Clouds, Night Aurora, End Vortex & 42-deg Physical Rainbow */
+    /* 2b. Multiscale Volumetric Clouds, Night Aurora, Astronomical End Cosmos & 42-deg Physical Rainbow */
     if (noGeometry) {
         vec3 skyScatHDR;
         float skyTrans, borderContrast;
@@ -181,7 +181,12 @@ void main() {
             skyScatHDR = mix(skyScatHDR, edgeRef.rgb, 0.35);
             skyTrans = mix(skyTrans, edgeRef.a, 0.35);
         }
+#if defined(DIMENSION_END)
+        /* Replace Vanilla noisy purple static completely with 0.25x Milky Way + 1080p Black Hole, M31 & Stars! */
+        sceneHDR = evaluateEndCosmosFullRes(dir, skyScatHDR);
+#else
         sceneHDR = sceneHDR * skyTrans + skyScatHDR + evaluateAtmosphericRainbow(dir, worldShadowLightDir()) * skyTrans;
+#endif
         reflWork = max(reflWork, smoothstep(0.18, 0.45, borderContrast) * 0.55);
     }
 
