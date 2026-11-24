@@ -27,8 +27,8 @@ void main() {
     vec4 state = texture2D(colortex2, texcoord);
 
     float d = texture2D(depthtex0, texcoord).r;
-    float dOpaque = texture2D(depthtex1, texcoord).r;
-    float dNoHand = texture2D(depthtex2, texcoord).r;
+    float dOpaque = (d < 0.9999) ? texture2D(depthtex1, texcoord).r : 1.0;
+    float dNoHand = (d < 0.9999) ? texture2D(depthtex2, texcoord).r : 1.0;
 
     vec3 viewPos, camRel, dir;
     float tHit;
@@ -36,7 +36,7 @@ void main() {
     bool noGeometry;
     levelSetup(texcoord, viewPos, camRel, dir, tHit, skyWeights, noGeometry);
 
-    bool isHand = (dOpaque < dNoHand - 1e-5);
+    bool isHand = (!noGeometry) && (dOpaque < dNoHand - 1e-5);
     vec3 sceneHDR = hdrColor.rgb;
 
     /* 1. Concept Level 2 Grain-Free Shafts (8 taps, Perceptually Gated!) */
@@ -141,19 +141,13 @@ void main() {
     sceneHDR = applyVolumetricsLinear(sceneHDR, dir, haze, estRays, tHit, noGeometry);
 #endif
 
-    /* 3. Silky 4-Tap Tent Upsample of Dual-Pass Quarter-Res Cinema HDR Bloom & Gargantua Glare */
+    /* 3. Single Hardware-Bilinear (GL_LINEAR) Read of 0.25x Fused Cinema HDR Bloom (-75% bloom fetches!) */
 #if BLOOM && DEBUG_LEVEL == 0
-    vec2 bStep = 0.85 / max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
-    vec3 bloomHDR = 0.25 * (
-        texture2D(colortex6, clamp(texcoord + vec2(-bStep.x, -bStep.y), 0.002, 0.998)).rgb +
-        texture2D(colortex6, clamp(texcoord + vec2( bStep.x, -bStep.y), 0.002, 0.998)).rgb +
-        texture2D(colortex6, clamp(texcoord + vec2(-bStep.x,  bStep.y), 0.002, 0.998)).rgb +
-        texture2D(colortex6, clamp(texcoord + vec2( bStep.x,  bStep.y), 0.002, 0.998)).rgb
-    );
+    vec3 bloomHDR = texture2D(colortex6, texcoord).rgb;
 #if defined(DIMENSION_END)
-    sceneHDR += max(bloomHDR, vec3(0.0)) * 0.36;
+    sceneHDR += max(bloomHDR, vec3(0.0)) * 0.34;
 #else
-    sceneHDR += max(bloomHDR, vec3(0.0)) * 0.26;
+    sceneHDR += max(bloomHDR, vec3(0.0)) * 0.24;
 #endif
 #endif
 

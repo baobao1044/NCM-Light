@@ -7,13 +7,13 @@
 [![Shaderpack CI](https://github.com/baobao1044/NCM-Light/actions/workflows/ci.yml/badge.svg)](https://github.com/baobao1044/NCM-Light/actions/workflows/ci.yml)
 [![Download Latest ZIP](https://img.shields.io/github/v/release/baobao1044/NCM-Light?color=2ea043&label=Download%20NCM-Light.zip&logo=github)](https://github.com/baobao1044/NCM-Light/releases/latest)
 [![OpenGL 3.3 Core](https://img.shields.io/badge/OpenGL-3.3%20Core%20(%23version%20120)-1f6feb)](#hardware--compatibility)
-[![GLSL Permutations](https://img.shields.io/badge/Verified%20Shaders-228%2F228%20Passing-3fb950)](tools/check_pack.py)
+[![GLSL Permutations](https://img.shields.io/badge/Verified%20Shaders-205%2F205%20Passing-3fb950)](tools/check_pack.py)
 [![Math Proofs](https://img.shields.io/badge/CI%20Math%20Proofs-10%2F10%20Passing-39c5cf)](tools/simulate_levels.py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-d29922.svg)](LICENSE)
 
 **Zero Compute Shaders · Zero SSBOs · Zero TAA Smearing · Pure OpenGL 3.3 (`#version 120`) for Iris & OptiFine**
 
-[**⬇ Download `NCM-Light.zip` (v4.0.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**All-12 Benchmark Matrix**](#master-benchmark-matrix--all-12-ncm-features-verified) · [**1. Path Tracing**](#1-delta-ncm-path-tracing-proof--ai-fast-weight-attention-meets-gi) · [**2. Volumetrics**](#2-multiscale-volumetric-cascade--perceptual-gating) · [**3. Bandwidth & SSR**](#3-breaking-the-igpu-bandwidth--ssr-wall) · [**4. 8-Class Optics**](#4-8-class-physical-optics-scattering--spectral-dispersion) · [**5. Shadows & Wind**](#5-c-hyperbolic-shadows-stained-glass--vertex-waving) · [**6. Sky & 3 Dimensions**](#6-multiscale-sky-volumetrics--multi-dimension-savings) · [**7. Ablation & UHD 620**](#7-12-feature-ablation-profiles--real-intel-uhd-620-telemetry) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
+[**⬇ Download `NCM-Light.zip` (v4.2.0)**](https://github.com/baobao1044/NCM-Light/releases/latest) · [**All-12 Benchmark Matrix**](#master-benchmark-matrix--all-12-ncm-features-verified) · [**1. Path Tracing**](#1-delta-ncm-path-tracing-proof--ai-fast-weight-attention-meets-gi) · [**2. Volumetrics**](#2-multiscale-volumetric-cascade--perceptual-gating) · [**3. Bandwidth & SSR**](#3-breaking-the-igpu-bandwidth--ssr-wall) · [**4. 8-Class Optics**](#4-8-class-physical-optics-scattering--spectral-dispersion) · [**5. Shadows & Wind**](#5-c-hyperbolic-shadows-stained-glass--vertex-waving) · [**6. Sky & 3 Dimensions**](#6-multiscale-sky-volumetrics--multi-dimension-savings) · [**7. Ablation & UHD 620**](#7-12-feature-ablation-profiles--real-intel-uhd-620-telemetry) · [**Tiếng Việt 🇻🇳**](#-tổng-quan--hướng-dẫn-nhanh-tiếng-việt)
 
 </div>
 

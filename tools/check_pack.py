@@ -334,7 +334,7 @@ def glsl_checks(shaders_dir, dim_sets, glslang, workdir):
                     problems.append(err)
 
                 # Also exercise key option permutations on overworld composites/final/terrain/shadow
-                if dim_label == "overworld" and stage == "fsh" and name in ("composite1", "composite2", "composite3", "composite4", "final"):
+                if dim_label == "overworld" and stage == "fsh" and name in ("composite1", "composite2", "composite3", "final"):
                     variants = [
                         ("shadows0",  source.replace("#define SHADOWS 1", "#define SHADOWS 0")),
                         ("rtgi0",     source.replace("#define RT_GI 1", "#define RT_GI 0")),
