@@ -98,7 +98,7 @@ void main() {
 
     if (noGeometry) {
 #if defined(DIMENSION_END)
-        evaluateEndSkyL0(dir, outG0, outL1, ao0);
+        evaluateEndSkyL0(dir, outG0, outL1, ao0, rays0, volGate0);
 #else
         vec4 vSky = evaluateVolumetricSkyL0(dir);
         outG0 = vSky.rgb;
@@ -108,6 +108,10 @@ void main() {
     } else {
         float currDist = -viewPos.z;
         normDepth = clamp(currDist / 64.0, 0.0, 0.99);
+#if SHADOWS && defined(DIMENSION_END)
+        /* Long-reach 12-step Gargantua shadow at 0.25x (16x cheaper than 1080p!) stored in unused rays0 slot */
+        rays0 = hasSurf ? traceEndGargantuaShadow(viewPos, worldN) : 1.0;
+#endif
 #if RT_GI
         if (hasSurf && RT_STRENGTH > 0.001 && currDist < 42.0) {
             vec3 viewN = normalize(mat3(gbufferModelView) * worldN);

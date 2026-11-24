@@ -25,7 +25,7 @@ void main() {
 varying vec2 texcoord;
 
 void denoiseDeltaNCM(vec2 uv, float centerZ, vec3 centerWorldN, float centerSurprise,
-                     out vec3 outGI, out vec3 outL1, out float outAO)
+                     out vec3 outGI, out vec3 outL1, out float outAO, out float outEndShad)
 {
     vec2 coarseRes = max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
     /* Surprise-guided A-Trous stride: razor-sharp 1-texel when converged, 2.5-texel on disocclusion */
@@ -50,6 +50,7 @@ void denoiseDeltaNCM(vec2 uv, float centerZ, vec3 centerWorldN, float centerSurp
     vec3 sumL1 = vec3(0.0);
     vec3 sumN  = vec3(0.0);
     float sumAO = 0.0;
+    float sumES = 0.0;
     float wSum = 0.0;
 
     for (int i = 0; i < 5; i++) {
@@ -64,7 +65,9 @@ void denoiseDeltaNCM(vec2 uv, float centerZ, vec3 centerWorldN, float centerSurp
         float nW = nDot * nDot;
 
         float w = kW[i] * (0.02 + 0.98 * nW * nW) / (1.0 + dz * dz * 6.0);
-        sumAO += texture2D(colortex1, cuv).y * w;
+        vec4 c1 = texture2D(colortex1, cuv);
+        sumAO += c1.y * w;
+        sumES += c1.x * w;
         sumG0 += max(texture2D(colortex4, cuv).rgb, vec3(0.0)) * w;
         sumL1 += texture2D(colortex5, cuv).rgb * w;
         sumN  += cNorm * w;
@@ -75,11 +78,14 @@ void denoiseDeltaNCM(vec2 uv, float centerZ, vec3 centerWorldN, float centerSurp
     if (wSum > 1e-4) {
         float invW = 1.0 / wSum;
         outAO = clamp(sumAO * invW, 0.25, 1.0);
+        outEndShad = clamp(sumES * invW, 0.0, 1.0);
         avgG0 = max(sumG0 * invW, vec3(0.0));
         outL1 = sumL1 * invW;
         avgCoarseN = normalize(sumN + vec3(0.0, 1e-5, 0.0));
     } else {
-        outAO = clamp(texture2D(colortex1, uv).y, 0.25, 1.0);
+        vec4 c1c = texture2D(colortex1, uv);
+        outAO = clamp(c1c.y, 0.25, 1.0);
+        outEndShad = clamp(c1c.x, 0.0, 1.0);
         avgG0 = max(texture2D(colortex4, uv).rgb, vec3(0.0));
         outL1 = texture2D(colortex5, uv).rgb;
         avgCoarseN = centerWorldN;
@@ -89,7 +95,10 @@ void denoiseDeltaNCM(vec2 uv, float centerZ, vec3 centerWorldN, float centerSurp
     outGI = convolveDeltaNCML1(avgG0, outL1, centerWorldN, avgCoarseN);
 }
 
-void gatherVolumetricSky(vec2 uv, out vec3 skyScatHDR, out vec3 endCloudsHDR, out float skyTrans, out float borderContrast) {
+void gatherVolumetricSky(vec2 uv, out vec3 skyScatHDR, out vec3 endCloudsHDR,
+                         out float skyTrans, out float borderContrast,
+                         out float bhTrans, out float frontTrans)
+{
     vec2 coarseRes = max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
     vec2 invCoarse = 1.0 / coarseRes;
     vec2 fCoord = uv * coarseRes - 0.5;
@@ -100,6 +109,8 @@ void gatherVolumetricSky(vec2 uv, out vec3 skyScatHDR, out vec3 endCloudsHDR, ou
     vec3 sumScat = vec3(0.0);
     vec3 sumEndC = vec3(0.0);
     float sumTrans = 0.0;
+    float sumBhT = 0.0;
+    float sumFrT = 0.0;
     float wSum = 0.0;
     float minT = 1.0;
     float maxT = 0.0;
@@ -110,11 +121,14 @@ void gatherVolumetricSky(vec2 uv, out vec3 skyScatHDR, out vec3 endCloudsHDR, ou
             vec2 cuv = clamp(uv00 + off * invCoarse, 0.002, 0.998);
             if (texture2D(depthtex0, cuv).r < 0.9999) continue;
             float bW = ((ix == 0) ? (1.0 - f.x) : f.x) * ((iy == 0) ? (1.0 - f.y) : f.y) + 0.01;
-            float tVal = clamp(texture2D(colortex1, cuv).y, 0.0, 1.0);
+            vec4 c1 = texture2D(colortex1, cuv);
+            float tVal = clamp(c1.y, 0.0, 1.0);
             sumTrans += tVal * bW;
             sumScat  += texture2D(colortex4, cuv).rgb * bW;
 #if defined(DIMENSION_END)
             sumEndC  += texture2D(colortex5, cuv).rgb * bW;
+            sumBhT   += clamp(c1.x, 0.0, 1.0) * bW;
+            sumFrT   += clamp(c1.z, 0.0, 1.0) * bW;
 #endif
             wSum += bW;
             minT = min(minT, tVal);
@@ -127,11 +141,15 @@ void gatherVolumetricSky(vec2 uv, out vec3 skyScatHDR, out vec3 endCloudsHDR, ou
         skyScatHDR = max(sumScat * invW, vec3(0.0));
         endCloudsHDR = max(sumEndC * invW, vec3(0.0));
         skyTrans = clamp(sumTrans * invW, 0.0, 1.0);
+        bhTrans = clamp(sumBhT * invW, 0.0, 1.0);
+        frontTrans = clamp(sumFrT * invW, 0.0, 1.0);
         borderContrast = maxT - minT;
     } else {
         skyScatHDR = vec3(0.0);
         endCloudsHDR = vec3(0.0);
         skyTrans = 1.0;
+        bhTrans = 1.0;
+        frontTrans = 1.0;
         borderContrast = 0.0;
     }
 }
@@ -175,6 +193,7 @@ void main() {
        ~85% flat converged 1080p pixels use 2 hardware-bilinear taps (12.5x fewer fetches!),
        while ~15% edge/disoccluded pixels run the 5-tap Surprise-Guided A-Trous filter! */
     float estAO = 1.0;
+    float estEndShad = clamp(coarse1.x, 0.0, 1.0);
     vec3 estGI = vec3(0.0);
     vec3 estL1 = vec3(0.0);
     float edgeWork = 0.0;
@@ -184,11 +203,11 @@ void main() {
         vec4 fastSH = texture2D(colortex5, texcoord);
         float centerSurprise = clamp((abs(fastSH.a) - 0.30) / 0.45, 0.0, 1.0);
         if ((coarse1.w > 0.08 || centerSurprise >= 0.22) && DEBUG_LEVEL != 1) {
-            denoiseDeltaNCM(texcoord, viewPos.z, worldNormal, centerSurprise, estGI, estL1, estAO);
+            denoiseDeltaNCM(texcoord, viewPos.z, worldNormal, centerSurprise, estGI, estL1, estAO, estEndShad);
             edgeWork = max(coarse1.w, centerSurprise);
         } else {
-            /* Ultra-Fast L1-Cached 4-Tap Tent Filter on 0.25x colortex4 + colortex1.y (0 depth/normal reads!):
-               Eliminates 4x4 GI & AO blotches on stone/walls while staying super light on UHD 620! */
+            /* Ultra-Fast L1-Cached 4-Tap Tent Filter on 0.25x colortex4 + colortex1 (0 extra fetches for End shadows!):
+               Eliminates 4x4 GI, AO & End shadow blotches while staying ultra-light on Intel UHD 620! */
             vec2 qStep = 1.0 / max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
             vec2 uv00 = clamp(texcoord + vec2(-0.5, -0.5) * qStep, 0.002, 0.998);
             vec2 uv10 = clamp(texcoord + vec2( 0.5, -0.5) * qStep, 0.002, 0.998);
@@ -198,11 +217,12 @@ void main() {
             vec3 g10 = max(texture2D(colortex4, uv10).rgb, vec3(0.0));
             vec3 g01 = max(texture2D(colortex4, uv01).rgb, vec3(0.0));
             vec3 g11 = max(texture2D(colortex4, uv11).rgb, vec3(0.0));
-            float a00 = texture2D(colortex1, uv00).y;
-            float a10 = texture2D(colortex1, uv10).y;
-            float a01 = texture2D(colortex1, uv01).y;
-            float a11 = texture2D(colortex1, uv11).y;
-            estAO = clamp(0.25 * (a00 + a10 + a01 + a11), 0.25, 1.0);
+            vec4 c1_00 = texture2D(colortex1, uv00);
+            vec4 c1_10 = texture2D(colortex1, uv10);
+            vec4 c1_01 = texture2D(colortex1, uv01);
+            vec4 c1_11 = texture2D(colortex1, uv11);
+            estAO = clamp(0.25 * (c1_00.y + c1_10.y + c1_01.y + c1_11.y), 0.25, 1.0);
+            estEndShad = clamp(0.25 * (c1_00.x + c1_10.x + c1_01.x + c1_11.x), 0.0, 1.0);
             estGI = 0.25 * (g00 + g10 + g01 + g11);
             estL1 = fastSH.rgb;
         }
@@ -217,11 +237,11 @@ void main() {
 
     if (noGeometry) {
         vec3 skyScatHDR, endCloudsHDR;
-        float skyTrans, borderContrast;
-        gatherVolumetricSky(texcoord, skyScatHDR, endCloudsHDR, skyTrans, borderContrast);
+        float skyTrans, borderContrast, bhTrans, frontTrans;
+        gatherVolumetricSky(texcoord, skyScatHDR, endCloudsHDR, skyTrans, borderContrast, bhTrans, frontTrans);
 #if defined(DIMENSION_END)
-        /* Full-1080p True 3D Schwarzschild Geodesic Gargantua + Lensed Milky Way + Ring + Volumetric End Clouds */
-        hdrScene = evaluateEndCosmosFullRes(dir, skyScatHDR, endCloudsHDR, skyTrans);
+        /* Hybrid Multiscale Gargantua: 0.25x 3D Geodesic Disk + 1080p Event Horizon, Photon Ring, Stars & Ring! */
+        hdrScene = evaluateEndCosmosFullRes(dir, skyScatHDR, endCloudsHDR, skyTrans, bhTrans, frontTrans);
 #else
         if (borderContrast > 0.18 && DEBUG_LEVEL != 1) {
             vec4 edgeRef = evaluateCloudEdgeRefine(dir);
@@ -310,7 +330,7 @@ void main() {
         }
 #elif SHADOWS && defined(DIMENSION_END)
         if (ndotl > 0.001) {
-            shadowRGB = vec3(traceEndContactShadow(viewPos, worldNormal));
+            shadowRGB = vec3(estEndShad);
         } else {
             shadowRGB = vec3(0.0);
         }
@@ -405,6 +425,11 @@ void main() {
 #endif
 
     /* 3. Concept Level 1 Deterministic Shafts (4 taps, Perceptually Gated!) */
+#if defined(DIMENSION_END) || defined(DIMENSION_NETHER)
+    float estRays = 0.0;
+    float wVol1 = 0.0;
+    float volGate1 = 0.0;
+#else
     float sceneLuma = dot(hdrScene, vec3(0.2126, 0.7152, 0.0722));
     float volPerc = perceptualImportance(sceneLuma);
     float estRays = max(coarse1.x, 0.0);
@@ -419,6 +444,7 @@ void main() {
         estRays = max(estRays + wVol1 * (rays1 - estRays), 0.0);
         volGate1 = relativeResidual(subRes1 * skyWeights.y, rays1);
     }
+#endif
 
     float packedTrans = (transCode > 1.75)
         ? (0.64 + 0.32 * transTag.z)
