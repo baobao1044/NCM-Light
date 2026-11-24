@@ -105,6 +105,7 @@ void main() {
         ao0 = vSky.a;
 #endif
         normDepth = 1.0;
+        edgeGate0 = edges.x;
     } else {
         float currDist = -viewPos.z;
         normDepth = clamp(currDist / 64.0, 0.0, 0.99);

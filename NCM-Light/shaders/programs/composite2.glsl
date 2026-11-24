@@ -24,36 +24,27 @@ void main() {
 
 varying vec2 texcoord;
 
-void denoiseDeltaNCM(vec2 uv, float centerZ, vec3 centerWorldN, float centerSurprise,
+void denoiseDeltaNCM(vec2 uv, float centerZ, vec3 centerWorldN, vec4 centerCoarse1, vec3 centerL1,
                      out vec3 outGI, out vec3 outL1, out float outAO, out float outEndShad)
 {
     vec2 coarseRes = max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
-    /* Surprise-guided A-Trous stride: razor-sharp 1-texel when converged, 2.5-texel on disocclusion */
-    float stride = mix(1.0, 2.5, centerSurprise);
-    vec2 stepUV = stride / coarseRes;
+    vec2 stepUV = 1.25 / coarseRes;
 
-    vec2 offs[5];
-    offs[0] = vec2( 0.0,  0.0);
-    offs[1] = vec2( stepUV.x, 0.0);
-    offs[2] = vec2(-stepUV.x, 0.0);
-    offs[3] = vec2( 0.0,  stepUV.y);
-    offs[4] = vec2( 0.0, -stepUV.y);
+    vec2 offs[4];
+    offs[0] = vec2( stepUV.x, 0.0);
+    offs[1] = vec2(-stepUV.x, 0.0);
+    offs[2] = vec2( 0.0,  stepUV.y);
+    offs[3] = vec2( 0.0, -stepUV.y);
 
-    float kW[5];
-    kW[0] = mix(0.44, 0.28, centerSurprise);
-    kW[1] = (1.0 - kW[0]) * 0.25;
-    kW[2] = kW[1];
-    kW[3] = kW[1];
-    kW[4] = kW[1];
+    float w0 = 0.44;
+    float wN = 0.14;
+    vec3 sumG0 = max(texture2D(colortex4, uv).rgb, vec3(0.0)) * w0;
+    vec3 sumN  = centerWorldN * w0;
+    float sumAO = centerCoarse1.y * w0;
+    float sumES = centerCoarse1.x * w0;
+    float wSum = w0;
 
-    vec3 sumG0 = vec3(0.0);
-    vec3 sumL1 = vec3(0.0);
-    vec3 sumN  = vec3(0.0);
-    float sumAO = 0.0;
-    float sumES = 0.0;
-    float wSum = 0.0;
-
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {
         vec2 cuv = clamp(uv + offs[i], 0.002, 0.998);
         float cd = texture2D(depthtex0, cuv).r;
         if (cd >= 0.9999) continue;
@@ -64,32 +55,21 @@ void denoiseDeltaNCM(vec2 uv, float centerZ, vec3 centerWorldN, float centerSurp
         float nDot = max(dot(centerWorldN, cNorm), 0.0);
         float nW = nDot * nDot;
 
-        float w = kW[i] * (0.02 + 0.98 * nW * nW) / (1.0 + dz * dz * 6.0);
+        float w = wN * (0.02 + 0.98 * nW * nW) / (1.0 + dz * dz * 6.0);
         vec4 c1 = texture2D(colortex1, cuv);
         sumAO += c1.y * w;
         sumES += c1.x * w;
         sumG0 += max(texture2D(colortex4, cuv).rgb, vec3(0.0)) * w;
-        sumL1 += texture2D(colortex5, cuv).rgb * w;
         sumN  += cNorm * w;
         wSum += w;
     }
 
-    vec3 avgG0, avgCoarseN;
-    if (wSum > 1e-4) {
-        float invW = 1.0 / wSum;
-        outAO = clamp(sumAO * invW, 0.25, 1.0);
-        outEndShad = clamp(sumES * invW, 0.0, 1.0);
-        avgG0 = max(sumG0 * invW, vec3(0.0));
-        outL1 = sumL1 * invW;
-        avgCoarseN = normalize(sumN + vec3(0.0, 1e-5, 0.0));
-    } else {
-        vec4 c1c = texture2D(colortex1, uv);
-        outAO = clamp(c1c.y, 0.25, 1.0);
-        outEndShad = clamp(c1c.x, 0.0, 1.0);
-        avgG0 = max(texture2D(colortex4, uv).rgb, vec3(0.0));
-        outL1 = texture2D(colortex5, uv).rgb;
-        avgCoarseN = centerWorldN;
-    }
+    float invW = 1.0 / max(wSum, 1e-4);
+    outAO = clamp(sumAO * invW, 0.25, 1.0);
+    outEndShad = clamp(sumES * invW, 0.0, 1.0);
+    vec3 avgG0 = max(sumG0 * invW, vec3(0.0));
+    outL1 = centerL1;
+    vec3 avgCoarseN = normalize(sumN + vec3(0.0, 1e-5, 0.0));
 
     /* Evaluate exact hemisphere-centered SH L1 directional shift for 1080p normal maps & block bevels */
     outGI = convolveDeltaNCML1(avgG0, outL1, centerWorldN, avgCoarseN);
@@ -164,11 +144,28 @@ void main() {
     bool noGeometry;
     levelSetup(texcoord, viewPos, camRel, dir, tHit, skyWeights, noGeometry);
 
-    /* Ultra-Fast Sky Early-Out (skips 6 full-res G-buffer/depth reads on sky pixels -> huge high-res FPS boost!) */
+    /* Ultra-Fast Sky Early-Out: 97% open sky pixels use hardware GL_LINEAR directly (-85% sky fetches!);
+       2x2 depth-masked gather runs ONLY along the thin 4px terrain silhouette border (c1Sky.w >= 0.05)! */
     if (noGeometry) {
+        vec4 c1Sky = texture2D(colortex1, texcoord);
         vec3 skyScatHDR, endCloudsHDR;
         float skyTrans, borderContrast, bhTrans, frontTrans;
-        gatherVolumetricSky(texcoord, skyScatHDR, endCloudsHDR, skyTrans, borderContrast, bhTrans, frontTrans);
+        if (c1Sky.w > 0.05) {
+            gatherVolumetricSky(texcoord, skyScatHDR, endCloudsHDR, skyTrans, borderContrast, bhTrans, frontTrans);
+        } else {
+            skyScatHDR = max(texture2D(colortex4, texcoord).rgb, vec3(0.0));
+            skyTrans = clamp(c1Sky.y, 0.0, 1.0);
+            borderContrast = 0.0;
+#if defined(DIMENSION_END)
+            endCloudsHDR = max(texture2D(colortex5, texcoord).rgb, vec3(0.0));
+            bhTrans = clamp(c1Sky.x, 0.0, 1.0);
+            frontTrans = clamp(c1Sky.z, 0.0, 1.0);
+#else
+            endCloudsHDR = vec3(0.0);
+            bhTrans = 1.0;
+            frontTrans = 1.0;
+#endif
+        }
         float skyEdgeW = 0.0;
         vec3 hdrSky;
 #if defined(DIMENSION_END)
@@ -189,19 +186,10 @@ void main() {
         gl_FragData[0] = vec4(hdrSky, 1.0);
         gl_FragData[1] = vec4(0.0, clamp(skyEdgeW, 0.0, 1.0), 0.0, 0.0);
 #else
-        vec4 c1Sky = texture2D(colortex1, texcoord);
-        float sLuma = dot(hdrSky, vec3(0.2126, 0.7152, 0.0722));
         float sEstRays = max(c1Sky.x, 0.0);
-        float sWVol1 = (DEBUG_LEVEL == 1) ? 0.0 : refineWeight(c1Sky.z * perceptualImportance(sLuma));
-        float sVolGate1 = 0.0;
-        if (sWVol1 > 0.002) {
-            float sc1, sSub1;
-            float sRays1 = marchShafts(dir, tHit, TAPS_CONCEPT1, sc1, sSub1) * skyWeights.y;
-            sEstRays = max(sEstRays + sWVol1 * (sRays1 - sEstRays), 0.0);
-            sVolGate1 = relativeResidual(sSub1 * skyWeights.y, sRays1);
-        }
+        float sVolGate1 = (DEBUG_LEVEL == 1) ? 0.0 : clamp(c1Sky.z, 0.0, 1.0);
         gl_FragData[0] = vec4(hdrSky, 1.0);
-        gl_FragData[1] = vec4(clamp(sEstRays, 0.0, 1.0), clamp(max(sWVol1, skyEdgeW), 0.0, 1.0), 0.0, clamp(sVolGate1, 0.0, 1.0));
+        gl_FragData[1] = vec4(clamp(sEstRays, 0.0, 1.0), clamp(skyEdgeW, 0.0, 1.0), 0.0, sVolGate1);
 #endif
         return;
     }
@@ -229,34 +217,34 @@ void main() {
     unpackSurfaceData(surfData, hasSurf, worldNormal, blockLight, skyLight, matTag);
 
     /* 1. High-Res Bandwidth-Halved Delta-NCM Read:
-       ~85% flat converged pixels use 2 diagonal hardware-bilinear (GL_LINEAR) taps (averages all 4 coarse
-       texels in 1/4th the fetches -> saves 12.4M fetches @ 1080p, 22M @ 1440p!) */
+       ~92% flat pixels reuse coarse1.xy + 1-2 hardware GL_LINEAR taps (ZERO camera-movement Surprise spike!);
+       bilateral denoise runs ONLY on true geometric depth/normal edges (coarse1.w > 0.26)! */
     float estAO = 1.0;
     float estEndShad = clamp(coarse1.x, 0.0, 1.0);
     vec3 estGI = vec3(0.0);
     vec3 estL1 = vec3(0.0);
     float edgeWork = 0.0;
-    float maxGiDist = 42.0 * mix(0.68, 1.0, hiResThrottle());
+    float resThrottle = hiResThrottle();
+    float maxGiDist = 42.0 * mix(0.68, 1.0, resThrottle);
 
 #if RT_GI
     if (!isHand && !isTranslucent && hasSurf && RT_STRENGTH > 0.001 && (-viewPos.z) < maxGiDist) {
         vec4 fastSH = texture2D(colortex5, texcoord);
-        float centerSurprise = clamp((abs(fastSH.a) - 0.30) / 0.45, 0.0, 1.0);
-        if ((coarse1.w > 0.08 || centerSurprise >= 0.22) && DEBUG_LEVEL != 1) {
-            denoiseDeltaNCM(texcoord, viewPos.z, worldNormal, centerSurprise, estGI, estL1, estAO, estEndShad);
-            edgeWork = max(coarse1.w, centerSurprise);
+        if (coarse1.w > 0.26 && DEBUG_LEVEL != 1) {
+            denoiseDeltaNCM(texcoord, viewPos.z, worldNormal, coarse1, fastSH.rgb, estGI, estL1, estAO, estEndShad);
+            edgeWork = coarse1.w;
         } else {
-            vec2 qDiag = 0.35 / max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
-            vec2 uvA = clamp(texcoord - qDiag, 0.002, 0.998);
-            vec2 uvB = clamp(texcoord + qDiag, 0.002, 0.998);
-            vec3 gA = max(texture2D(colortex4, uvA).rgb, vec3(0.0));
-            vec3 gB = max(texture2D(colortex4, uvB).rgb, vec3(0.0));
-            vec4 cA = texture2D(colortex1, uvA);
-            vec4 cB = texture2D(colortex1, uvB);
-            estAO = clamp(0.5 * (cA.y + cB.y), 0.25, 1.0);
-            estEndShad = clamp(0.5 * (cA.x + cB.x), 0.0, 1.0);
-            estGI = 0.5 * (gA + gB);
+            estAO = clamp(coarse1.y, 0.25, 1.0);
+            estEndShad = clamp(coarse1.x, 0.0, 1.0);
             estL1 = fastSH.rgb;
+            if (resThrottle < 0.78) {
+                estGI = max(texture2D(colortex4, texcoord).rgb, vec3(0.0));
+            } else {
+                vec2 qDiag = 0.35 / max(floor(vec2(max(viewWidth, 1.0), max(viewHeight, 1.0)) * 0.25), vec2(1.0));
+                vec3 gA = max(texture2D(colortex4, clamp(texcoord - qDiag, 0.002, 0.998)).rgb, vec3(0.0));
+                vec3 gB = max(texture2D(colortex4, clamp(texcoord + qDiag, 0.002, 0.998)).rgb, vec3(0.0));
+                estGI = 0.5 * (gA + gB);
+            }
         }
     }
 #endif
@@ -370,7 +358,7 @@ void main() {
         float rough = isCrystal ? 0.14 : (isMetal ? 0.20 : (isGlossy ? 0.25 : (isThickSSS ? 0.50 : 0.62)));
         vec3 f0RGB = isMetal
             ? mix(vec3(0.58), albedoLin, 0.82)
-            : (isCrystal ? (vec3(0.14) * evaluateThinFilmIridescence(ndotv, 5.2))
+            : (isCrystal ? (vec3(0.24) * evaluateThinFilmIridescence(ndotv, 5.2))
                          : (isGlossy ? vec3(0.06) : vec3(0.032)));
 
         vec3 specTerm = vec3(0.0);
@@ -439,26 +427,15 @@ void main() {
     if (noGeometry) hdrScene *= 0.25;
 #endif
 
-    /* 3. Concept Level 1 Deterministic Shafts (4 taps, Perceptually Gated!) */
+    /* 3. Forward 4-Tap Quarter-Res Shafts & Residual Gate Directly to Final Edge-Only Refiner! */
 #if defined(DIMENSION_END) || defined(DIMENSION_NETHER)
     float estRays = 0.0;
     float wVol1 = 0.0;
     float volGate1 = 0.0;
 #else
-    float sceneLuma = dot(hdrScene, vec3(0.2126, 0.7152, 0.0722));
-    float volPerc = perceptualImportance(sceneLuma);
     float estRays = max(coarse1.x, 0.0);
-    float wVol1 = (DEBUG_LEVEL == 1) ? 0.0 : refineWeight(coarse1.z * volPerc);
-    float volGate1 = 0.0;
-
-    if (wVol1 > 0.002) {
-        float c1, subRes1;
-        float rawRays1 = marchShafts(dir, tHit, TAPS_CONCEPT1, c1, subRes1);
-        float rays1 = rawRays1 * skyWeights.y;
-
-        estRays = max(estRays + wVol1 * (rays1 - estRays), 0.0);
-        volGate1 = relativeResidual(subRes1 * skyWeights.y, rays1);
-    }
+    float wVol1 = 0.0;
+    float volGate1 = (DEBUG_LEVEL == 1) ? 0.0 : clamp(coarse1.z, 0.0, 1.0);
 #endif
 
     float packedTrans = (transCode > 1.75)

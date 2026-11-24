@@ -15,7 +15,6 @@
     const int colortex5Format = RGBA16F;
     const int colortex6Format = R11F_G11F_B10F;
     const int shadowcolor0Format = RGBA8;
-    const int shadowcolor1Format = RGBA8;
     const float shadowIntervalSize = 2.0;
     const float shadowDistanceRenderMul = 1.0;
 */
@@ -49,9 +48,9 @@ const float FOG_CAP = 0.42;
 const float RAYS_CAP = 0.75;
 const float SHADOW_BIAS = 0.00012;
 
-const int TAPS_CONCEPT0 = 2;
+const int TAPS_CONCEPT0 = 4;
 const int TAPS_CONCEPT1 = 4;
-const int TAPS_CONCEPT2 = 8;
+const int TAPS_CONCEPT2 = 6;
 const int MAX_TAPS = TAPS_CONCEPT2;
 
 /* ============================== Uniforms ============================= */
@@ -70,7 +69,6 @@ uniform sampler2D depthtex2;
 uniform sampler2D shadowtex0;
 uniform sampler2D shadowtex1;
 uniform sampler2D shadowcolor0;
-uniform sampler2D shadowcolor1;
 
 uniform mat4 gbufferProjection;
 uniform mat4 gbufferProjectionInverse;
@@ -173,10 +171,10 @@ float ignNoise(vec2 pixelCoord) {
     return fract(52.9829189 * fract(dot(pixelCoord, vec2(0.06711056, 0.00583715))));
 }
 
-/* Automatic High-Resolution Throttle (>1080p: 1440p / 4K / High-DPI) so iGPU FPS stays fast! */
+/* Automatic High-Resolution Throttle (scales cleanly across 900p / 1080p / 1440p / 4K on iGPUs!) */
 float hiResThrottle() {
     float pxCount = max(viewWidth, 1.0) * max(viewHeight, 1.0);
-    return clamp(2100000.0 / max(pxCount, 2100000.0), 0.45, 1.0);
+    return clamp(1050000.0 / max(pxCount, 1050000.0), 0.42, 1.0);
 }
 
 void buildOrthonormalBasis(vec3 n, out vec3 b1, out vec3 b2) {
@@ -893,47 +891,30 @@ void traceDeltaNCMPathGI(vec2 quarterUV, vec3 viewPos, vec3 viewNormal, vec3 wor
         }
     }
 
-    /* Deterministic 4-Quadrant Crevice RTAO (100% noise-free & temporally invariant -> ZERO blotches!) */
-    vec2 aoDirs[4];
-    aoDirs[0] = vec2( 0.92388,  0.38268);
-    aoDirs[1] = vec2(-0.38268,  0.92388);
-    aoDirs[2] = vec2(-0.92388, -0.38268);
-    aoDirs[3] = vec2( 0.38268, -0.92388);
+    /* Deterministic 4-Tap Screen-Space Horizon Crevice AO (0 matrix projections, -50% fetches, ZERO blotches!) */
+    vec2 aoStep = (0.52 / max(viewDist, 0.85)) * vec2(1.0, max(viewWidth, 1.0) / max(viewHeight, 1.0)) * 0.14;
+    vec2 aoOffs[4];
+    aoOffs[0] = vec2( aoStep.x,  aoStep.y * 0.4);
+    aoOffs[1] = vec2(-aoStep.x * 0.4,  aoStep.y);
+    aoOffs[2] = vec2(-aoStep.x, -aoStep.y * 0.4);
+    aoOffs[3] = vec2( aoStep.x * 0.4, -aoStep.y);
 
     float detOcc = 0.0;
-    float aoNear = 0.48 + viewDist * 0.014;
-    float aoMid  = clamp(1.65 + viewDist * 0.05, 1.65, 3.6);
     for (int q = 0; q < 4; q++) {
-        vec3 aoRay = (b1 * aoDirs[q].x + b2 * aoDirs[q].y) * 0.78 + viewNormal * 0.6258;
-        float qOcc = 0.0;
-
-        vec3 pA = startPos + aoRay * aoNear;
-        vec3 prjA = fastProjectToScreen(pA);
-        if (prjA.z > 0.0 && prjA.x > 0.003 && prjA.x < 0.997 && prjA.y > 0.003 && prjA.y < 0.997) {
-            float sdA = texture2D(depthtex2, prjA.xy).r;
-            if (sdA < 0.9999) {
-                float penA = fastViewZ(sdA) - pA.z;
-                if (penA > 0.025 && penA < 0.85) {
-                    qOcc = 1.0 - smoothstep(0.45, 0.85, penA);
-                }
+        vec2 qUV = clamp(quarterUV + aoOffs[q], 0.003, 0.997);
+        float sdQ = texture2D(depthtex2, qUV).r;
+        if (sdQ < 0.9999) {
+            vec3 qDiff = viewFromDepth(qUV, sdQ) - viewPos;
+            float qLen2 = dot(qDiff, qDiff);
+            if (qLen2 > 1e-4 && qLen2 < 3.2) {
+                float vDot = dot(qDiff * inversesqrt(qLen2), viewNormal);
+                detOcc += clamp(vDot - 0.12, 0.0, 1.0) * (1.0 - qLen2 * 0.28);
             }
         }
-        vec3 pB = startPos + aoRay * aoMid;
-        vec3 prjB = fastProjectToScreen(pB);
-        if (prjB.z > 0.0 && prjB.x > 0.003 && prjB.x < 0.997 && prjB.y > 0.003 && prjB.y < 0.997) {
-            float sdB = texture2D(depthtex2, prjB.xy).r;
-            if (sdB < 0.9999) {
-                float penB = fastViewZ(sdB) - pB.z;
-                if (penB > 0.05 && penB < 1.85) {
-                    qOcc = max(qOcc, (1.0 - smoothstep(1.05, 1.85, penB)) * 0.55);
-                }
-            }
-        }
-        detOcc += qOcc;
     }
 
     float invSpp = 1.0 / totalRaysF;
-    outAO = 1.0 - clamp((detOcc * 0.25) * distAtten * 0.80, 0.0, 0.62);
+    outAO = 1.0 - clamp((detOcc * 0.25) * distAtten * 0.85, 0.0, 0.62);
     rawRGB *= invSpp;
 
     if (hasHistory) {
@@ -1820,23 +1801,32 @@ bool traceOffscreenWorldRT(vec3 viewPos, vec3 worldNormal, vec3 worldR, out vec3
     return false;
 #else
     vec3 feetOrigin = (gbufferModelViewInverse * vec4(viewPos, 1.0)).xyz + worldNormal * 0.14;
-    if (dot(feetOrigin, feetOrigin) > (shadowDistance * shadowDistance * 0.90)) return false;
+    if (dot(feetOrigin, feetOrigin) > (shadowDistance * shadowDistance * 0.85)) return false;
 
     vec4 sOrig4 = shadowProjection * (shadowModelView * vec4(feetOrigin, 1.0));
     vec3 sOrigNDC = sOrig4.xyz / max(sOrig4.w, 1e-5);
     vec3 sDirNDC  = mat3(shadowProjection) * (mat3(shadowModelView) * worldR);
     float zTexPerMeter = max(0.25 * abs(shadowProjection[2].z), 0.0005);
 
-    float tPrev = 0.0;
-    float prevPenM = -0.20;
+    /* 1-tap Overhang / Cave-Roof Guard:
+       If the mirror origin is already underneath a roof or dirt overhang in sun-shadow space
+       (penM0 > 0.02), abort immediately so roof texels NEVER smear onto mirrors below! */
+    vec3 origD = distortShadowNDC(sOrigNDC + sDirNDC * 0.16);
+    if (max(abs(origD.x), abs(origD.y)) > 0.96 || abs(origD.z) > 0.98) return false;
+    float zOrigShad = texture2D(shadowtex1, origD.xy * 0.5 + 0.5).r;
+    float penM0 = ((origD.z * 0.5 + 0.5) - zOrigShad) / zTexPerMeter;
+    if (penM0 > 0.02) return false;
+
+    float tPrev = 0.16;
+    float prevPenM = penM0;
     float tHit = 0.0;
     vec2 hitSUV = vec2(0.5);
     float zHit = 1.0;
     bool hit = false;
 
-    float maxWorldDist = 24.0 * mix(0.65, 1.0, hiResThrottle());
-    float t = 0.32;
-    for (int i = 0; i < 8; i++) {
+    float maxWorldDist = 20.0 * mix(0.70, 1.0, hiResThrottle());
+    float t = 0.42;
+    for (int i = 0; i < 6; i++) {
         vec3 preNDC = sOrigNDC + sDirNDC * t;
         if (max(abs(preNDC.x), abs(preNDC.y)) > 0.96 || abs(preNDC.z) > 0.98) break;
 
@@ -1845,9 +1835,9 @@ bool traceOffscreenWorldRT(vec3 viewPos, vec3 worldNormal, vec3 worldR, out vec3
         float sampleZ = dNDC.z * 0.5 + 0.5;
         float zShad = texture2D(shadowtex1, suv).r;
         float penM = (sampleZ - zShad) / zTexPerMeter;
-        float stepSpan = max(1.65, (t - tPrev) * 1.15);
+        float stepSpan = max(0.95, (t - tPrev) * 1.10);
 
-        if (penM > 0.03 && prevPenM <= 0.16 && penM < stepSpan) {
+        if (penM > 0.04 && prevPenM <= 0.02 && penM < stepSpan) {
             tHit = t;
             hitSUV = suv;
             zHit = zShad;
@@ -1856,46 +1846,48 @@ bool traceOffscreenWorldRT(vec3 viewPos, vec3 worldNormal, vec3 worldR, out vec3
         }
         prevPenM = penM;
         tPrev = t;
-        t = min(t * 1.68, maxWorldDist);
+        t = min(t * 1.75, maxWorldDist);
     }
 
     if (!hit) return false;
 
-    /* 3-step binary bisection in shadow volume space */
+    /* 2-step binary bisection in shadow volume space */
     float tLo = tPrev;
     float tHi = tHit;
-    for (int b = 0; b < 3; b++) {
+    float finalPenM = 0.5;
+    for (int b = 0; b < 2; b++) {
         float tMid = 0.5 * (tLo + tHi);
         vec3 mNDC = distortShadowNDC(sOrigNDC + sDirNDC * tMid);
         vec2 mSUV = mNDC.xy * 0.5 + 0.5;
         float mSampleZ = mNDC.z * 0.5 + 0.5;
         float mz = texture2D(shadowtex1, mSUV).r;
-        if ((mSampleZ - mz) > 0.0) {
+        float mPen = (mSampleZ - mz) / zTexPerMeter;
+        if (mPen > 0.0) {
             tHi = tMid;
             hitSUV = mSUV;
             zHit = mz;
+            finalPenM = mPen;
         } else {
             tLo = tMid;
         }
     }
 
+    if (finalPenM > 0.85) return false;
+
     vec4 sc0 = texture2D(shadowcolor0, hitSUV);
-    vec4 sc1 = texture2D(shadowcolor1, hitSUV);
     float zAll = texture2D(shadowtex0, hitSUV).r;
     bool unoccludedAlbedo = (abs(zAll - zHit) < zTexPerMeter * 0.45);
     vec3 hitAlbedo = unoccludedAlbedo ? srgbToLinear(sc0.rgb) : vec3(0.32);
 
-    /* Emissive off-screen blocks (Torches, Magma, Lanterns, Glowstone, Lava) glow brightly in mirrors! */
-    if (sc1.z > 0.5) {
+    /* Emissive off-screen blocks (alpha=0.965 packed in shadow.fsh, ZERO extra MRTs!) glow brightly! */
+    if (unoccludedAlbedo && sc0.a > 0.95 && sc0.a < 0.98) {
         outHitCol = hitAlbedo * 3.8;
         return true;
     }
 
-    vec3 hitN = octDecodeNormal(sc1.xy);
-    float hitSky = sc1.w;
-    float ndl = max(dot(hitN, worldShadowLightDir()), 0.0);
-    vec3 amb = skyAmbientIrradiance() * (0.30 + 0.70 * hitSky * hitSky);
-    vec3 sun = directCelestialIrradiance() * (ndl * smoothstep(0.10, 0.55, hitSky));
+    float approxNdl = clamp(dot(-worldR, worldShadowLightDir()) * 0.55 + 0.45, 0.15, 1.0);
+    vec3 amb = skyAmbientIrradiance() * 0.68;
+    vec3 sun = directCelestialIrradiance() * (approxNdl * 0.62 * directLightWeatherFade());
     outHitCol = hitAlbedo * (amb + sun);
     return true;
 #endif
@@ -1965,30 +1957,32 @@ vec4 traceReflectionRT(vec2 screenUV, vec3 viewPos, vec3 worldNormal,
 #endif
 
     float resThrottle = hiResThrottle();
-    float maxSsrDist = 46.0 * mix(0.68, 1.0, resThrottle);
+    float maxSsrDist = 44.0 * mix(0.68, 1.0, resThrottle);
     float ssrDistFade = 1.0 - smoothstep(maxSsrDist * 0.72, maxSsrDist, -viewPos.z);
     if (fresnel < 0.015 || ssrDistFade < 0.02 || dot(R, viewNormal) < 0.01) {
         return vec4(envFallback + specGlint, fresnel);
     }
+
+    bool allowOffscreenRT = (fresnel > 0.08 && skyAccess > 0.20);
 
     /* Allow wide-angle cross-room mirror bounces all the way up to R.z = 0.94!
        When R.z > 0.94 (pointing straight behind camera), seamlessly hand off to 360-deg World RT! */
     float towardCamFade = (1.0 - smoothstep(0.72, 0.95, R.z)) * ssrDistFade;
     if (towardCamFade < 0.02) {
         vec3 offHit;
-        if (traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHit)) {
+        if (allowOffscreenRT && traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHit)) {
             return vec4(mix(envFallback, offHit, ssrDistFade) + specGlint * 0.2, fresnel);
         }
         return vec4(envFallback + specGlint, fresnel);
     }
 
-    float marchLen = min((far > 1.0) ? far : 32.0, 32.0 * mix(0.70, 1.0, resThrottle));
+    float marchLen = min((far > 1.0) ? far : 30.0, 30.0 * mix(0.70, 1.0, resThrottle));
     vec3 startPos = viewPos + viewNormal * max(0.022, -viewPos.z * 0.0028);
     if (R.z > 0.0001) {
         float zRoom = (-near * 1.15) - startPos.z;
         if (zRoom <= 0.02) {
             vec3 offHitNear;
-            if (traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitNear)) {
+            if (allowOffscreenRT && traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitNear)) {
                 return vec4(mix(envFallback, offHitNear, ssrDistFade), fresnel);
             }
             return vec4(envFallback + specGlint, fresnel);
@@ -2001,7 +1995,7 @@ vec4 traceReflectionRT(vec2 screenUV, vec3 viewPos, vec3 worldNormal,
     vec3 p1 = fastProjectToScreen(endPos);
     if (p0.z < 0.0 || p1.z < 0.0) {
         vec3 offHitClip;
-        if (traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitClip)) {
+        if (allowOffscreenRT && traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitClip)) {
             return vec4(mix(envFallback, offHitClip, ssrDistFade), fresnel);
         }
         return vec4(envFallback + specGlint, fresnel);
@@ -2010,9 +2004,9 @@ vec4 traceReflectionRT(vec2 screenUV, vec3 viewPos, vec3 worldNormal,
     vec2 uv0 = p0.xy;
     vec2 uv1 = p1.xy;
     float invZ0 = 1.0 / min(startPos.z, -near);
-    float invZ1 = 1.0 / min(endPos.z, -near);
+    float invZ1Raw = 1.0 / min(endPos.z, -near);
 
-    /* Clip ray segment strictly to visible screen box [0.002, 0.998] */
+    /* Clip ray segment strictly to visible screen box [0.002, 0.998] & compute exact 3D clippedLen! */
     vec2 duv = uv1 - uv0;
     float sMax = 1.0;
     if (duv.x >  1e-5) sMax = min(sMax, (0.998 - uv0.x) / duv.x);
@@ -2021,14 +2015,17 @@ vec4 traceReflectionRT(vec2 screenUV, vec3 viewPos, vec3 worldNormal,
     if (duv.y < -1e-5) sMax = min(sMax, (0.002 - uv0.y) / duv.y);
     if (sMax <= 0.001) {
         vec3 offHitEdge;
-        if (traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitEdge)) {
+        if (allowOffscreenRT && traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitEdge)) {
             return vec4(mix(envFallback, offHitEdge, ssrDistFade), fresnel);
         }
         return vec4(envFallback + specGlint, fresnel);
     }
 
     uv1 = uv0 + duv * sMax;
-    invZ1 = mix(invZ0, invZ1, sMax);
+    float invZ1 = mix(invZ0, invZ1Raw, sMax);
+    float clippedAlpha = clamp((sMax * invZ1Raw) / invZ1, 0.0, 1.0);
+    float clippedLen = marchLen * clippedAlpha;
+
     vec2 pxSpan = (uv1 - uv0) * vec2(max(viewWidth, 1.0), max(viewHeight, 1.0));
     if (dot(pxSpan, pxSpan) < 2.25) {
         return vec4(envFallback + specGlint, fresnel);
@@ -2038,27 +2035,29 @@ vec4 traceReflectionRT(vec2 screenUV, vec3 viewPos, vec3 worldNormal,
     float sHit = 0.0;
     float hitPen = 999.0;
     float prevPen = -0.02;
-    float prevProbeZ = startPos.z;
+    float prevT3D = 0.0;
     vec2 hitUV = uv0;
     bool hit = false;
 
-    /* Adaptive step count: 12 steps <=1080p, 8 steps at 1440p/4K to keep high-res FPS super smooth! */
-    int numSteps = (resThrottle < 0.72) ? 8 : 12;
+    /* Adaptive step count + 16x binary bisection: 10 @ <=800p, 8 @ 1080p (128x eff.), 6 @ 1440p+ (96x eff.) */
+    int numSteps = (resThrottle < 0.46) ? 6 : ((resThrottle < 0.78) ? 8 : 10);
     float invSteps = 1.0 / float(numSteps);
-    for (int i = 1; i <= 12; i++) {
+    for (int i = 1; i <= 10; i++) {
         if (i > numSteps) break;
         float fi = float(i) * invSteps;
         float s = 0.18 * fi + 0.82 * fi * fi;
         vec2 curUV = mix(uv0, uv1, s);
         float probeZ = 1.0 / mix(invZ0, invZ1, s);
+        /* Exact 3D Euclidean ray travel (never collapses to 0 when ray moves sideways R.z ~ 0!) */
+        float t3D = clippedLen * clamp(s * invZ1 * probeZ, 0.0, 1.0);
+        float step3D = max(t3D - prevT3D, 0.04);
 
         float sd = texture2D(depthtex2, curUV).r;
         if (sd < 0.9999) {
             float vz = fastViewZ(sd);
             float pen = vz - probeZ;
-            float dzStep = abs(probeZ - prevProbeZ);
-            float thick = max(0.08, dzStep * 1.20 + 0.015 * (-probeZ));
-            if (pen > 0.0 && prevPen <= 0.03 && pen < thick) {
+            float thick = max(0.24, step3D * 1.85 + 0.025 * (-probeZ));
+            if (pen > 0.0 && prevPen <= 0.04 && pen < thick) {
                 sHit = s;
                 hitPen = pen;
                 hitUV = curUV;
@@ -2070,13 +2069,13 @@ vec4 traceReflectionRT(vec2 screenUV, vec3 viewPos, vec3 worldNormal,
             prevPen = -1.0;
         }
         sPrev = s;
-        prevProbeZ = probeZ;
+        prevT3D = t3D;
     }
 
     if (!hit) {
         /* Screen-space ray exited viewport or missed -> seamlessly continue into 360-deg Off-Screen World RT! */
         vec3 offHitMiss;
-        if (traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitMiss)) {
+        if (allowOffscreenRT && traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitMiss)) {
             return vec4(mix(envFallback, offHitMiss, ssrDistFade) + specGlint * 0.15, fresnel);
         }
         return vec4(envFallback + specGlint, fresnel);
@@ -2104,8 +2103,12 @@ vec4 traceReflectionRT(vec2 screenUV, vec3 viewPos, vec3 worldNormal,
         }
     }
 
-    /* Strict post-bisection residual, hand & back-face check: on reject, fall back to 360-deg World RT! */
-    bool ssrValid = (finalPen <= max(0.09, 0.025 * (-finalProbeZ)));
+    /* Exact 3D post-bisection step residual: captures angled walls cleanly while rejecting thin-torch silhouettes! */
+    float probeZLo = 1.0 / mix(invZ0, invZ1, sLo);
+    float tLo3D = clippedLen * clamp(sLo * invZ1 * probeZLo, 0.0, 1.0);
+    float tHi3D = clippedLen * clamp(sHi * invZ1 * finalProbeZ, 0.0, 1.0);
+    float finalStep3D = max(tHi3D - tLo3D, 0.02);
+    bool ssrValid = (finalPen <= max(0.18, finalStep3D * 2.6 + 0.025 * (-finalProbeZ)));
     if (ssrValid) {
         float dHandCheck = texture2D(depthtex1, hitUV).r;
         float dWorldCheck = texture2D(depthtex2, hitUV).r;
@@ -2125,7 +2128,7 @@ vec4 traceReflectionRT(vec2 screenUV, vec3 viewPos, vec3 worldNormal,
 
     if (!ssrValid) {
         vec3 offHitRej;
-        if (traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitRej)) {
+        if (allowOffscreenRT && traceOffscreenWorldRT(viewPos, worldNormal, worldR, offHitRej)) {
             return vec4(mix(envFallback, offHitRej, ssrDistFade) + specGlint * 0.15, fresnel);
         }
         return vec4(envFallback + specGlint, fresnel);

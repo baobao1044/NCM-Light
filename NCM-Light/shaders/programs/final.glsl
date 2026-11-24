@@ -39,7 +39,7 @@ void main() {
     bool isHand = (!noGeometry) && (dOpaque < dNoHand - 1e-5);
     vec3 sceneHDR = hdrColor.rgb;
 
-    /* 1. Concept Level 2 Grain-Free Shafts (8 taps, Perceptually Gated!) */
+    /* 1. Concept Level 2 Grain-Free Shafts (Perceptually Gated on True Shaft Edges!) */
     float estRays = state.x;
     float wMain1 = state.y;
     float packedTrans = state.z;
@@ -47,9 +47,10 @@ void main() {
     float perc2 = perceptualImportance(dot(sceneHDR, vec3(0.2126, 0.7152, 0.0722)));
     float wVol2 = (DEBUG_LEVEL == 1) ? 0.0 : refineWeight(volGate1 * perc2);
 
-    if (wVol2 > 0.002) {
+    if (wVol2 > 0.04) {
         float c2, subRes2;
-        float rawRays2 = marchShafts(dir, tHit, TAPS_CONCEPT2, c2, subRes2);
+        int fineTaps = (hiResThrottle() < 0.78) ? 4 : TAPS_CONCEPT2;
+        float rawRays2 = marchShafts(dir, tHit, fineTaps, c2, subRes2);
         float rays2 = rawRays2 * skyWeights.y;
         estRays = max(estRays + wVol2 * (rays2 - estRays), 0.0);
     }
@@ -106,11 +107,11 @@ void main() {
                     reflWork = 0.85;
                 } else if (isCrystal) {
                     /* Subtle 1-pixel prismatic crystal dispersion + clean thin-film iridescence */
-                    float smoothC = clamp(0.90 * min(RT_STRENGTH, 1.3), 0.0, 0.95) * distFade;
-                    vec4 refl = traceReflectionRT(texcoord, viewPos, worldNormal, 0.14, smoothC, skyLight, 0.0012);
+                    float smoothC = clamp(0.92 * min(RT_STRENGTH, 1.3), 0.0, 0.96) * distFade;
+                    vec4 refl = traceReflectionRT(texcoord, viewPos, worldNormal, 0.24, smoothC, skyLight, 0.0010);
                     float cosV = clamp(dot(-dir, worldNormal), 0.05, 1.0);
                     vec3 irid = evaluateThinFilmIridescence(cosV, 5.2);
-                    sceneHDR = mix(sceneHDR, refl.rgb * mix(vec3(1.0), irid, 0.30), clamp(refl.a, 0.0, 0.85));
+                    sceneHDR = mix(sceneHDR, refl.rgb * mix(vec3(1.0), irid, 0.25), clamp(refl.a, 0.0, 0.86));
                     reflWork = 0.85;
                 } else if (isGlossy) {
                     float smoothG = clamp(0.84 * min(RT_STRENGTH, 1.3), 0.0, 0.95) * distFade;
